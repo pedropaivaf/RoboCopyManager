@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%20Windows%2011%20%7C%20Server-0078D6?style=flat-square&logo=windows&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE?style=flat-square&logo=powershell&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
-[![Tests](https://img.shields.io/badge/Tests-70%2F70%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
+[![Tests](https://img.shields.io/badge/Tests-71%2F71%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Speed](https://img.shields.io/badge/Engine-Native%20Kernel%20%2FMT%3A128-orange?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Architecture](https://img.shields.io/badge/Architecture-GUI%20%2B%20TUI%20%2B%20CLI-purple?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
@@ -81,10 +81,15 @@ Ou a sintaxe direta:
 irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1 | iex
 ```
 
-#### Como Funciona:
+#### Como Funciona (Padrao Win11Debloat):
 1. O comando faz a leitura do script `RoboCopy.ps1` diretamente da branch `main` do GitHub para a memoria RAM.
-2. O script detecta se o terminal esta em modo Administrador. Se nao estiver, solicita elevacao UAC e reabre a sessao elevada de forma automatica.
-3. Abre instantaneamente o menu interativo com suporte para selecao de pastas por texto ou janela grafica de navegacao.
+2. O script localiza ou baixa a versao oficial da aplicacao grafica (`RoboCopyManager.exe`) para o cache local do Windows (`%LOCALAPPDATA%\RoboCopyManager`).
+3. Solicita elevacao administrativa UAC e **abre imediatamente a Interface Grafica completa (GUI Tkinter)** na tela do computador!
+4. Em execucoes posteriores, a interface grafica abre instantaneamente em menos de 1 segundo utilizando o cache.
+5. Caso deseje executar o menu em modo texto dentro do terminal, basta adicionar o parametro `-CLI`:
+   ```powershell
+   irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1 | iex -CLI
+   ```
 
 ---
 
@@ -370,7 +375,7 @@ RoboCopyManager/
 
 ## Garantia de Qualidade e Bateria de Testes
 
-O projeto conta com **70 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
+O projeto conta com **71 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
 
 ```bash
 pytest tests/ -v
@@ -381,15 +386,15 @@ Exemplo de execucao da suite:
 ============================= test session starts =============================
 platform win32 -- Python 3.10+, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\...\RoboCopyManager, configfile: pytest.ini
-collected 70 items
+collected 71 items
 
-tests\test_audit_all_options.py .............................            [ 41%]
-tests\test_cli_integration.py ....                                       [ 47%]
-tests\test_gui_integration.py ..........                                 [ 61%]
-tests\test_powershell_script.py ....                                     [ 67%]
+tests\test_audit_all_options.py .............................            [ 40%]
+tests\test_cli_integration.py ....                                       [ 46%]
+tests\test_gui_integration.py ..........                                 [ 60%]
+tests\test_powershell_script.py .....                                    [ 67%]
 tests\test_robocopy.py .......................                           [100%]
 
-============================= 70 passed in 3.81s ==============================
+============================= 71 passed in 3.70s ==============================
 ```
 
 ---

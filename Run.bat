@@ -1,9 +1,12 @@
 @echo off
 title RoboCopy Manager
 cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0RoboCopy.ps1"
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo Pressione qualquer tecla para fechar...
-    pause >nul
+if exist "%~dp0dist\RoboCopyManager.exe" (
+    start "" "%~dp0dist\RoboCopyManager.exe"
+    exit /b
 )
+if exist "%~dp0RoboCopyManager.exe" (
+    start "" "%~dp0RoboCopyManager.exe"
+    exit /b
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0RoboCopy.ps1"

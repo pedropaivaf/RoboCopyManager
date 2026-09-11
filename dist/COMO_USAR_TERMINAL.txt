@@ -18,8 +18,10 @@ irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.
 
 ### O que acontece automaticamente:
 1. O PowerShell le o script diretamente do GitHub e o carrega em memoria.
-2. Se o terminal nao for Administrador, o script solicita permissao UAC e reabre como Administrador.
-3. O menu de texto interativo abre na hora no seu terminal!
+2. O script detecta a aplicacao grafica (RoboCopyManager.exe). Se for a primeira execucao, baixa o executavel oficial automaticamente para o cache do Windows (%LOCALAPPDATA%\RoboCopyManager) e abre a interface grafica (GUI Tkinter) completa na tela!
+3. Se o terminal nao for Administrador, o script aciona a elevacao UAC e abre a interface grafica como Administrador.
+4. Caso prefira o menu interativo em texto no terminal, basta adicionar o parametro:
+   `irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1 | iex -CLI`
 
 ---
 

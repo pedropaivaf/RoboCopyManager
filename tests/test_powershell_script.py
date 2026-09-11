@@ -96,6 +96,16 @@ class TestPowerShellScript(unittest.TestCase):
             self.assertIn("ETAPA 1 DE 2", res.stdout)
             self.assertIn("ETAPA 2 DE 2", res.stdout)
 
+    def test_powershell_gui_bootstrap_detection(self):
+        """Valida que o script possui os parâmetros -GUI, -CLI, -Update e a função Launch-GUIApp."""
+        with open(self.script_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("[switch]$GUI", content)
+        self.assertIn("[switch]$CLI", content)
+        self.assertIn("[switch]$Update", content)
+        self.assertIn("function Launch-GUIApp", content)
+        self.assertIn("RoboCopyManager.exe", content)
+
 
 if __name__ == "__main__":
     unittest.main()

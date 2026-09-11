@@ -13,6 +13,10 @@
 
 [CmdletBinding()]
 param(
+    [switch]$GUI,
+    [switch]$CLI,
+    [switch]$Console,
+    [switch]$Update,
     [string]$Source = "",
     [string]$Destination = "",
     [ValidateSet("", "backup", "fast", "mirror", "move", "goodsync_mirror", "goodsync_update", "goodsync_two_way", "goodsync_move", "goodsync_filter")]
@@ -99,6 +103,89 @@ function Select-FolderDialog([string]$title) {
     } catch {}
     return ""
 }
+
+function Launch-GUIApp {
+    Write-Host "`n==========================================================================" -ForegroundColor Cyan
+    Write-Host "   ROBOCOPY MANAGER - INICIALIZANDO APLICATIVO GRAFICO (GUI)              " -ForegroundColor White
+    Write-Host "==========================================================================" -ForegroundColor Cyan
+
+    $exeName = "RoboCopyManager.exe"
+    $localCandidates = @()
+    if ($PSScriptRoot) {
+        $localCandidates += (Join-Path $PSScriptRoot $exeName)
+        $localCandidates += (Join-Path $PSScriptRoot "dist\$exeName")
+    }
+    $localCandidates += (Join-Path (Get-Location) $exeName)
+    $localCandidates += (Join-Path (Get-Location) "dist\$exeName")
+
+    $foundExe = $null
+    foreach ($cand in $localCandidates) {
+        if ($cand -and (Test-Path $cand)) {
+            $foundExe = (Resolve-Path $cand).Path
+            break
+        }
+    }
+
+    $cacheDir = "$env:LOCALAPPDATA\RoboCopyManager"
+    $cacheExe = Join-Path $cacheDir $exeName
+
+    if (-not $foundExe) {
+        if (-not (Test-Path $cacheDir)) {
+            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        }
+
+        $needsDownload = $true
+        if ((Test-Path $cacheExe) -and (-not $Update)) {
+            $fileSize = (Get-Item $cacheExe).Length
+            if ($fileSize -ge 30000000) {
+                $foundExe = $cacheExe
+                $needsDownload = $false
+            }
+        }
+
+        if ($needsDownload) {
+            Write-Host "[RoboCopy Manager] Baixando a interface grafica oficial do GitHub..." -ForegroundColor Yellow
+            $downloadUrl = "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/dist/RoboCopyManager.exe"
+            
+            try {
+                $wc = New-Object System.Net.WebClient
+                $wc.Headers.Add("User-Agent", "RoboCopyManager-Bootstrap")
+                $wc.DownloadFile($downloadUrl, $cacheExe)
+                $foundExe = $cacheExe
+                Write-Host "[RoboCopy Manager] Download concluido com sucesso!" -ForegroundColor Green
+            } catch {
+                Write-Host "[ERRO] Falha ao baixar executavel da nuvem: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "[INFO] Alternando para o menu em modo terminal (TUI)...`n" -ForegroundColor Yellow
+                return $false
+            }
+        }
+    }
+
+    if ($foundExe -and (Test-Path $foundExe)) {
+        Write-Host "[RoboCopy Manager] Executavel pronto: $foundExe" -ForegroundColor Gray
+        Write-Host "[RoboCopy Manager] Abrindo interface grafica..." -ForegroundColor Green
+        try {
+            if ($global:IsAdmin) {
+                Start-Process -FilePath $foundExe
+            } else {
+                Start-Process -FilePath $foundExe -Verb RunAs
+            }
+            Write-Host "[RoboCopy Manager] Aplicativo carregado com sucesso!`n" -ForegroundColor Cyan
+            return $true
+        } catch {
+            Write-Host "[AVISO] Solicitacao de Administrador cancelada. Tentando abrir em modo comum..." -ForegroundColor DarkYellow
+            try {
+                Start-Process -FilePath $foundExe
+                return $true
+            } catch {
+                Write-Host "[ERRO] Nao foi possivel iniciar a interface grafica: $($_.Exception.Message)`n" -ForegroundColor Red
+                return $false
+            }
+        }
+    }
+    return $false
+}
+
 
 function Prompt-Folder([string]$label, [bool]$mustExist) {
     while ($true) {
@@ -352,10 +439,8 @@ function Start-InteractiveUI {
 # ------------------------------------------------------------------------------
 # 5. PONTO DE ENTRADA PRINCIPAL
 # ------------------------------------------------------------------------------
-if (-not $Source -or -not $Destination) {
-    Start-InteractiveUI
-} else {
-    # Modo Direto por Parâmetros (Linha de Comando / Scripts)
+if ($Source -and $Destination) {
+    # Modo Direto por Parâmetros (Linha de Comando / Scripts Headless)
     $argsList = @("/COPY:DAT", "/DCOPY:DAT", "/XJ", "/NP")
     $isTwoWay = $false
 
@@ -376,4 +461,14 @@ if (-not $Source -or -not $Destination) {
 
     $exitCode = Execute-RobocopyTask $Source $Destination $argsList $DryRun $isTwoWay
     exit $exitCode
+} elseif ($CLI -or $Console) {
+    # Modo Interativo de Terminal Texto (TUI)
+    Start-InteractiveUI
+} else {
+    # Modo Padrão (Padrão Win11Debloat): Iniciar a Interface Gráfica Desktop (GUI)
+    $launched = Launch-GUIApp
+    if (-not $launched) {
+        # Fallback de segurança caso a interface gráfica não possa ser aberta
+        Start-InteractiveUI
+    }
 }

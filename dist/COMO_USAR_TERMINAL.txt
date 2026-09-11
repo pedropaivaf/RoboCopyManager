@@ -1,0 +1,77 @@
+# GUIA: ROBOCOPY MANAGER - VERSAO TERMINAL (PADRAO WIN11DEBLOAT)
+
+Esta versao e um script autonomo em PowerShell puro (sem necessidade de instalar Python, sem compilar e sem baixar executaveis pesados). Funciona nativamente em qualquer Windows 10 e Windows 11.
+
+---
+
+## 1. COMO EXECUTAR DIRETO VIA GITHUB ONE-LINER (SEM BAIXAR NADA):
+
+Basta abrir o PowerShell ou Windows Terminal e colar o comando:
+
+```powershell
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1")))
+```
+ou o atalho resumido:
+```powershell
+irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1 | iex
+```
+
+### O que acontece automaticamente:
+1. O PowerShell le o script diretamente do GitHub e o carrega em memoria.
+2. Se o terminal nao for Administrador, o script solicita permissao UAC e reabre como Administrador.
+3. O menu de texto interativo abre na hora no seu terminal!
+
+---
+
+## 2. COMO EXECUTAR LOCALMENTE:
+
+### Opcao A: Duplo clique no Run.bat
+Basta dar dois cliques no arquivo `Run.bat`. Ele eleva para Administrador e executa o menu interativo automaticamente.
+
+### Opcao B: Executar o script no PowerShell
+Abra a pasta no PowerShell e digite:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\RoboCopy.ps1
+```
+
+### Opcao C: Executar o binario portatil (RoboCopyCLI.exe)
+Se preferir um arquivo executavel unico (.exe) de console:
+```cmd
+RoboCopyCLI.exe
+```
+
+---
+
+## 3. MODOS DE OPERACAO NO TERMINAL:
+
+### Modo 1: Interativo (Menu de Texto TUI)
+O sistema solicita:
+1. Pasta de Origem (permite digitar, colar com aspas, arrastar a pasta ou digitar [B] para abrir a janela de selecao de pastas do Windows).
+2. Pasta de Destino (digitar, colar ou [B] para procurar).
+3. Menu de opcoes numeradas:
+   [1] Backup Seguro (Recomendado)     - Copia novos/modificados sem apagar nada
+   [2] Copia Rapida (/MT:16)          - Velocidade maxima ignorando pastas vazias
+   [3] Espelhamento Identico (/MIR)    - Deixa o destino 100% igual a origem
+   [4] Mover Arquivos (/MOVE)         - Recorta arquivos da pasta de origem
+   [5] Central GoodSync               - Espelhamento, Atualizacao, 2-Way Sync (Fusao) e Filtros
+   [6] Opcoes Avancadas Customizadas  - Definir threads, tentativas e exclusoes manuais
+   [7] Reiniciar como Administrador   - Solicita elevacao imediata
+4. Permite Simular primeiro (/L - sem risco) ou Iniciar Copia Imediata com streaming ao vivo.
+
+### Modo 2: Linha de Comando Direta (Para Scripts e Automacoes)
+Exemplos com o PowerShell:
+
+- Backup Seguro:
+  powershell -File .\RoboCopy.ps1 -Source "C:\Origem" -Destination "D:\Backup" -Mode backup
+
+- Central GoodSync (Espelhamento Rigido):
+  powershell -File .\RoboCopy.ps1 -Source "C:\Origem" -Destination "D:\Destino" -Mode goodsync_mirror
+
+- Central GoodSync (Atualizacao Sem Exclusao):
+  powershell -File .\RoboCopy.ps1 -Source "C:\Origem" -Destination "D:\Destino" -Mode goodsync_update
+
+- Sincronizacao Bidirecional de 2 Vias (Fusao em 2 etapas):
+  powershell -File .\RoboCopy.ps1 -Source "C:\PastaA" -Destination "D:\PastaB" -Mode goodsync_two_way
+
+- Simular sem risco (Dry-Run):
+  powershell -File .\RoboCopy.ps1 -Source "C:\Origem" -Destination "D:\Destino" -DryRun

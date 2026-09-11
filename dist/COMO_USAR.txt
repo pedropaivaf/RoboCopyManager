@@ -1,0 +1,54 @@
+# GUIA RAPIDO: ROBOCOPY MANAGER & CENTRAL DE SINCRONIZACAO
+
+## 1. COMO USAR (MODO SIMPLIFICADO):
+1. ORIGEM: Clique em "Procurar..." e escolha a pasta que quer copiar (ou arraste a pasta).
+2. DESTINO: Clique em "Procurar..." e escolha onde quer salvar.
+3. ESCOLHA O QUE QUER FAZER:
+   - Backup Seguro (Recomendado): Copia apenas arquivos novos ou alterados (nao apaga nada).
+   - Copia Rapida: Copia com velocidade maxima ignorando pastas vazias.
+   - Espelhamento: Deixa o destino identico a origem (apaga arquivos deletados).
+   - Mover Arquivos: Transfere tudo e remove os arquivos da origem (recortar).
+4. INICIAR: Clique no botao azul "Iniciar Copia".
+
+---
+
+## 2. CENTRAL DE SINCRONIZACAO (ESTILO GOODSYNC):
+Clique no botao azul "Sincronizar Pastas (Modo GoodSync)" ao lado de Mostrar Opcoes Avancadas:
+
+1. Espelhamento Rigido (Mirror / 1-Way Sync):
+   - Cria uma copia exata da Origem no Destino.
+   - Arquivos apagados na origem sao apagados no destino. Arquivos extras no destino sao removidos.
+   - Comando: /MIR /R:3 /W:5 /V /TS /FP
+
+2. Atualizacao Sem Exclusao (Contribute / Update):
+   - Copia novidades e modificacoes da Origem para o Destino.
+   - Arquivos apagados na origem NUNCA sao apagados no destino.
+   - Comando: /E /XO /R:3 /W:5
+
+3. Sincronizacao Bidirecional (2-Way Sync / Fusao):
+   - Mescla o conteudo das duas pastas em 2 etapas automaticas (Origem -> Destino e Destino -> Origem).
+   - O que for novo em A vai para B e o que for novo em B vai para A. Ninguem perde arquivos.
+   - Comando: Etapa 1 (A -> B com /XO) + Etapa 2 (B -> A com /XO)
+
+4. Mover Arquivos (Move / Cut & Paste):
+   - Transfere os arquivos para o destino e os apaga completamente da pasta de origem apos a copia.
+   - Comando: /E /MOVE /R:3 /W:5
+
+5. Sincronizacao com Filtro de Extensao ou Tamanho:
+   - Permite filtrar por tipo (ex: ignorar .tmp, .bak com /XF) ou tamanho maximo aceito (/MAX).
+
+### Parametros Corporativos GoodSync:
+- Velocidade 32x (/MT:32): Copia ate 32 arquivos simultaneamente (ideal para milhares de arquivos pequenos).
+- Copiar Todas as Permissoes NTFS (/COPYALL): Preserva seguranca, ACLs corporativas, Dono e Auditoria.
+- Modo Backup Privilegiado (/ZB): Usa privilegios de Administrador para copiar arquivos protegidos.
+
+---
+
+## 3. BOTOES DE AJUDA "(i)":
+- Passe o mouse sobre qualquer icone "(i)" para ver explicacoes claras de para que serve cada opcao.
+
+---
+
+## 4. TRANSFERENCIA PLUG & PLAY:
+- Apenas copie o arquivo "RoboCopyManager.exe" para um pendrive.
+- Funciona em qualquer Windows 10 e Windows 11 sem instalar nada.

@@ -1,0 +1,28 @@
+﻿# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller temporary build artifacts (binaries in dist/ are tracked)
+build/
+
+# Caches and tests
+.pytest_cache/
+*.log
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak

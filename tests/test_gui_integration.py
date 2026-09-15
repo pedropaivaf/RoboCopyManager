@@ -463,6 +463,145 @@ class TestGUIIntegration(unittest.TestCase):
         self.assertEqual(self.app.btn_apply_plan.cget("state"), "disabled")
         self.assertIn("idênticos", self.app.lbl_diff_summary.cget("text"))
 
+    # =========================================================================
+    # LAYOUT, ROLAGEM E CORREÇÕES VISUAIS
+    # =========================================================================
+    def _pump(self, milliseconds: int):
+        """Roda o laço de eventos por um tempo, para os 'after' agendados dispararem."""
+        import time
+        limite = time.time() + (milliseconds / 1000.0)
+        while time.time() < limite:
+            self.app.update()
+            time.sleep(0.01)
+
+    def test_gui_monitor_is_always_visible(self):
+        """O monitor não fica abaixo da dobra: a tela não tem rolagem de página."""
+        self.assertFalse(hasattr(self.app, "main_scroll"),
+                         "A rolagem da página inteira foi removida do layout.")
+        self.app.update()
+        # A janela está oculta durante os testes, então a verificação é pelo
+        # gerenciador de geometria em vez da visibilidade efetiva na tela.
+        self.assertEqual(self.app.monitor_card.winfo_manager(), "pack")
+        self.assertTrue(self.app.monitor_card.pack_info().get("expand"),
+                        "O monitor precisa receber todo o espaço restante da janela.")
+
+    def test_gui_rapid_tab_switching_keeps_content_visible(self):
+        """
+        Duas trocas de aba seguidas não podem deixar a área em branco.
+
+        O CTkTabview agenda uma limpeza 100 ms após cada troca, que esconde as
+        abas que não estavam selecionadas naquele instante. Sem tratamento, a
+        limpeza da primeira troca apaga a aba escolhida pela segunda.
+        """
+        from robocopy_gui import TAB_CONSOLE, TAB_DIFFERENCES, TAB_OCCURRENCES
+
+        self.app._show_tab(TAB_OCCURRENCES)
+        self.app._show_tab(TAB_DIFFERENCES)
+        self.app._show_tab(TAB_CONSOLE)
+        self._pump(400)
+
+        self.assertEqual(self.app.monitor_tabs.get(), TAB_CONSOLE)
+        self.assertTrue(
+            self.app.monitor_tabs.tab(TAB_CONSOLE).winfo_manager(),
+            "A aba escolhida ficou escondida após trocas em sequência."
+        )
+        # E as abas que não foram escolhidas continuam recolhidas.
+        for outra in (TAB_OCCURRENCES, TAB_DIFFERENCES):
+            self.assertFalse(self.app.monitor_tabs.tab(outra).winfo_manager())
+
+    def test_gui_tooltip_never_leaves_the_screen(self):
+        """A dica é reposicionada e quebrada em linhas para caber na tela."""
+        from robocopy_gui import ToolTip
+
+        self.app.update()
+        texto_longo = ("Texto bem longo de propósito, repetido para forçar a quebra de linha "
+                       "e garantir que a janela da dica não ultrapasse a borda do monitor. ") * 3
+
+        # Elemento colado na borda direita da janela
+        alvo = self.app.theme_menu
+        dica = ToolTip(alvo, texto_longo)
+        dica.show_tip()
+        self.app.update()
+
+        janela = dica.tip_window
+        self.assertIsNotNone(janela)
+        x, y = janela.winfo_rootx(), janela.winfo_rooty()
+        largura, altura = janela.winfo_reqwidth(), janela.winfo_reqheight()
+        tela_w, tela_h = janela.winfo_screenwidth(), janela.winfo_screenheight()
+
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+        self.assertLessEqual(x + largura, tela_w, "A dica saiu pela borda direita da tela.")
+        self.assertLessEqual(y + altura, tela_h, "A dica saiu pela borda inferior da tela.")
+        self.assertLessEqual(largura, ToolTip.DEFAULT_WRAPLENGTH + 40,
+                             "A dica não quebrou o texto em várias linhas.")
+        dica.hide_tip()
+
+    def test_gui_autoscroll_controls(self):
+        """O console acompanha a última linha e o usuário pode pausar esse comportamento."""
+        self.app._clear_log()
+        self.assertTrue(self.app.var_autoscroll.get())
+
+        for i in range(200):
+            self.app._append_log_line(f"linha {i}\n")
+        self.app.update()
+        self.assertAlmostEqual(self.app.log_textbox.yview()[1], 1.0, places=2)
+
+        # Ir para o início pausa o acompanhamento
+        self.app._scroll_log_to_start()
+        self.app.update()
+        self.assertFalse(self.app.var_autoscroll.get())
+        self.assertLess(self.app.log_textbox.yview()[0], 0.05)
+
+        # Com o acompanhamento pausado, novas linhas não arrastam a visualização
+        posicao = self.app.log_textbox.yview()[0]
+        self.app._append_log_line("nova linha enquanto o usuário lê o começo\n")
+        self.app.update()
+        self.assertAlmostEqual(self.app.log_textbox.yview()[0], posicao, places=2)
+
+        # Voltar ao fim religa o acompanhamento
+        self.app._scroll_log_to_end()
+        self.app.update()
+        self.assertTrue(self.app.var_autoscroll.get())
+        self.app._clear_log()
+
+    def test_gui_mode_selector_and_preset_stay_in_sync(self):
+        """O seletor compacto de operação e a predefinição apontam sempre para o mesmo modo."""
+        self.app.selected_preset_key.set("espelhamento")
+        self.app._on_preset_selected()
+        self.app.update()
+        self.assertEqual(self.app.mode_selector.get(), "Espelhamento")
+        self.assertIn("Espelhamento", self.app.lbl_mode_description.cget("text"))
+
+        # Clicar no seletor também troca a predefinição
+        self.app._on_mode_segment_change("Sincronização Dupla")
+        self.app.update()
+        self.assertEqual(self.app.selected_preset_key.get(), "goodsync_two_way")
+        self.assertTrue(self.app.var_two_way.get())
+
+        self.app._on_mode_segment_change("Backup Seguro")
+        self.assertEqual(self.app.selected_preset_key.get(), "backup_incremental")
+
+    def test_gui_sync_filters_only_show_in_filter_mode(self):
+        """Os campos de filtro só aparecem no modo que realmente os utiliza."""
+        if not self.app.sync_visible:
+            self.app._toggle_sync_panel()
+
+        self.app.var_goodsync_mode.set("goodsync_mirror")
+        self.app._on_goodsync_mode_change()
+        self.app.update()
+        self.assertFalse(self.app.sync_filter_box.winfo_manager())
+
+        self.app.var_goodsync_mode.set("goodsync_filter")
+        self.app._on_goodsync_mode_change()
+        self.app.update()
+        self.assertTrue(self.app.sync_filter_box.winfo_manager())
+
+        self.app.var_goodsync_mode.set("goodsync_two_way")
+        self.app._on_goodsync_mode_change()
+        if self.app.sync_visible:
+            self.app._toggle_sync_panel()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%20Windows%2011%20%7C%20Server-0078D6?style=flat-square&logo=windows&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE?style=flat-square&logo=powershell&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
-[![Tests](https://img.shields.io/badge/Tests-137%2F137%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
+[![Tests](https://img.shields.io/badge/Tests-145%2F145%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Speed](https://img.shields.io/badge/Engine-Native%20Kernel%20%2FMT%3A128-orange?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Architecture](https://img.shields.io/badge/Architecture-GUI%20%2B%20TUI%20%2B%20CLI-purple?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
@@ -192,7 +192,8 @@ Ao executar o script pelo PowerShell, o menu interativo em modo texto organiza t
 A interface grafica foi projetada com arquitetura focada no usuario final e em equipes de suporte:
 
 - **Alternancia Imediata de Tema**: Suporte completo a **Tema Escuro** (Dark Mode - fundo `#1E1E1E` para menor fadiga visual) e **Tema Claro** (Light Mode - alto contraste para ambientes iluminados) com preservacao de visibilidade de labels e botoes.
-- **Botoes de Indice Contextual `(i)`**: Cada opcao e parametro possui um icone explicativo minimalista. Ao posicionar o mouse sobre ele, uma janela suspensa explica em linguagem simples o que a opcao faz, quando usar e quais riscos ela pode apresentar.
+- **Botoes de Indice Contextual `(i)`**: Cada opcao e parametro possui um icone explicativo minimalista. Ao posicionar o mouse sobre ele, uma janela suspensa explica em linguagem simples o que a opcao faz, quando usar e quais riscos ela pode apresentar. O texto quebra em varias linhas e a janela se reposiciona sozinha para nunca sair pela borda da tela.
+- **Tela sem rolagem de pagina**: a configuracao fica compacta no topo, os paineis avancados abrem no lugar e o monitor recebe todo o espaco restante. Nada de rolar a janela inteira para acompanhar a saida.
 - **Console de Streaming em Tempo Real**: Monitor integrado com auto-scroll que exibe linha a linha a saida do Robocopy, incluindo percentual de transferencia, velocidade e tabela resumo final de arquivos copiados, ignorados e falhados.
 - **Dialogos Nativos do Windows Explorer**: Botoes "Procurar..." que abrem a selecao nativa de pastas do Windows, alem de aceitar caminhos colados com ou sem aspas e caminhos de rede UNC (`\\servidor\compartilhamento`).
 - **Validacao Proativa Contra Perda de Dados**: O sistema impede operacoes caso a Origem seja identica ao Destino, avisa se a pasta de origem nao existir e alerta com destaque vermelho antes de qualquer operacao destrutiva (`/MIR` ou `/MOVE`).
@@ -204,6 +205,8 @@ A interface grafica foi projetada com arquitetura focada no usuario final e em e
 ## Console Colorido e Painel de Ocorrencias
 
 O monitor de execucao possui duas abas complementares:
+
+O monitor ocupa toda a parte de baixo da janela e **nunca sai da tela**: a area de configuracao fica compacta no topo e nao empurra a saida para baixo da dobra. Sao tres abas, e o aplicativo troca de aba sozinho conforme o que acontece (ao iniciar vai para o console, ao terminar com pendencias vai para as ocorrencias, ao analisar vai para as divergencias).
 
 **Aba "Console ao Vivo"** - a saida completa do Robocopy com destaque de sintaxe por tipo de evento (funciona tanto em Windows em portugues quanto em ingles):
 
@@ -230,6 +233,8 @@ O monitor de execucao possui duas abas complementares:
 Total: 4  |  Arquivos/Pastas EXTRA: 2  |  Falhas e acessos negados: 1  |  Incompatibilidades: 1
 ```
 
+O console acompanha a ultima linha automaticamente. Rolar para tras com a roda do mouse pausa esse acompanhamento (para a linha que voce esta lendo nao fugir), e os botoes **Inicio** e **Fim** levam direto a cada ponta do log. A caixa **"Acompanhar a ultima linha"** liga e desliga o comportamento a qualquer momento.
+
 - Filtros de um clique: **Todas**, **Arquivos EXTRA**, **Falhas** e **Incompatibilidades**.
 - **Exportar CSV** gera a planilha com tipo, tamanho, caminho e a linha original do Robocopy.
 - **Abrir Pasta** (ou duplo clique) localiza o item diretamente no Windows Explorer.
@@ -239,7 +244,7 @@ Total: 4  |  Arquivos/Pastas EXTRA: 2  |  Falhas e acessos negados: 1  |  Incomp
 
 ## Predefinicoes Basicas de Produtividade
 
-Para 90% das tarefas cotidianas, basta selecionar a Origem, o Destino e escolher um dos 4 fluxos basicos:
+Para 90% das tarefas cotidianas, basta selecionar a Origem, o Destino e escolher um dos fluxos basicos no seletor **Operacao** (uma unica linha; a explicacao do modo escolhido aparece logo abaixo dele):
 
 ### 1. Backup Seguro (Recomendado)
 - **O que faz**: Copia apenas arquivos novos ou que tenham data de modificacao mais recente que os arquivos existentes na pasta de destino. **Jamais apaga nada** na pasta de destino.
@@ -334,7 +339,7 @@ Ao clicar no botao **"Sincronizar Pastas (Modo GoodSync)"**, uma interface espec
 
 ## Analisar e Resolver Divergencias
 
-Saber que "existem divergencias" nao resolve nada se o programa nao diz **quais arquivos**, **em que caminho** e **o que fazer com cada um**. E exatamente isso que o painel **Analisar e Resolver Divergencias**, dentro da Central de Sincronizacao, entrega:
+Saber que "existem divergencias" nao resolve nada se o programa nao diz **quais arquivos**, **em que caminho** e **o que fazer com cada um**. E exatamente isso que a aba **Divergencias** do monitor entrega (o botao "Analisar Diferencas" esta tanto nessa aba quanto na Central de Sincronizacao):
 
 ```
 1. ANALISAR  ->  2. REVISAR E AJUSTAR AS ACOES  ->  3. APLICAR
@@ -342,7 +347,7 @@ Saber que "existem divergencias" nao resolve nada se o programa nao diz **quais 
 
 ### Passo 1 - Analisar (nao altera nada)
 
-O botao **"Analisar Diferencas (nao altera nada)"** roda o Robocopy em modo **somente-listagem** (`/L /MIR /FP /BYTES`). O `/MIR` combinado com `/L` e o que faz o Robocopy **relatar** tambem os itens que existem apenas no destino, sem apagar coisa alguma: nenhum arquivo e copiado, movido ou excluido nessa etapa.
+O botao **"Analisar Diferencas"** roda o Robocopy em modo **somente-listagem** (`/L /MIR /FP /BYTES`). O `/MIR` combinado com `/L` e o que faz o Robocopy **relatar** tambem os itens que existem apenas no destino, sem apagar coisa alguma: nenhum arquivo e copiado, movido ou excluido nessa etapa.
 
 ### Passo 2 - Revisar item a item
 
@@ -392,7 +397,7 @@ Recursos da tabela:
 
 ### Passo 3 - Aplicar
 
-**"Aplicar Acoes Selecionadas"** executa exatamente o que esta na coluna *Acao*, e exibe antes um resumo com a contagem de copias e a lista dos itens que serao apagados. A execucao segue regras de seguranca:
+**"Aplicar Acoes"** executa exatamente o que esta na coluna *Acao*, e exibe antes um resumo com a contagem de copias e a lista dos itens que serao apagados. A execucao segue regras de seguranca:
 
 - Arquivos da mesma pasta sao agrupados em uma unica chamada do Robocopy, com apenas os nomes escolhidos - **sem `/MIR`, sem `/PURGE` e sem `/MOVE`**.
 - **Todas as copias acontecem antes de qualquer exclusao.**
@@ -597,7 +602,7 @@ RoboCopyManager/
 
 ## Garantia de Qualidade e Bateria de Testes
 
-O projeto conta com **137 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
+O projeto conta com **145 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
 
 ```bash
 pytest tests/ -v
@@ -608,16 +613,16 @@ Exemplo de execucao da suite:
 ============================= test session starts =============================
 platform win32 -- Python 3.10+, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\...\RoboCopyManager, configfile: pytest.ini
-collected 137 items
+collected 145 items
 
 tests\test_audit_all_options.py .............................            [ 21%]
 tests\test_cli_integration.py ....                                       [ 24%]
-tests\test_gui_integration.py .....................                      [ 40%]
+tests\test_gui_integration.py ...........................                [ 40%]
 tests\test_powershell_script.py .....                                    [ 43%]
 tests\test_robocopy.py .......................                           [ 60%]
 tests\test_sync_center.py .......................................................  [100%]
 
-============================= 137 passed in 5.10s =============================
+============================= 145 passed in 5.40s =============================
 ```
 
 A suite cobre, entre outros pontos:

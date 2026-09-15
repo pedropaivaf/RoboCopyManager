@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%20Windows%2011%20%7C%20Server-0078D6?style=flat-square&logo=windows&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE?style=flat-square&logo=powershell&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
-[![Tests](https://img.shields.io/badge/Tests-71%2F71%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
+[![Tests](https://img.shields.io/badge/Tests-137%2F137%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Speed](https://img.shields.io/badge/Engine-Native%20Kernel%20%2FMT%3A128-orange?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Architecture](https://img.shields.io/badge/Architecture-GUI%20%2B%20TUI%20%2B%20CLI-purple?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
@@ -21,6 +21,7 @@
   - [Metodo 3: Execucao Local em Lote (Run.bat)](#metodo-3-execucao-local-em-lote-runbat)
 - [Demonstracao Visual do Terminal (TUI)](#demonstracao-visual-do-terminal-tui)
 - [Recursos da Interface Grafica (GUI)](#recursos-da-interface-grafica-gui)
+- [Console Colorido e Painel de Ocorrencias](#console-colorido-e-painel-de-ocorrencias)
 - [Predefinicoes Basicas de Produtividade](#predefinicoes-basicas-de-produtividade)
 - [Central de Sincronizacao GoodSync](#central-de-sincronizacao-goodsync)
   - [1. Espelhamento Rigido (Mirror / 1-Way Sync)](#1-espelhamento-rigido-mirror--1-way-sync)
@@ -28,6 +29,8 @@
   - [3. Sincronizacao Bidirecional (2-Way Sync / Fusao)](#3-sincronizacao-bidirecional-2-way-sync--fusao)
   - [4. Mover Arquivos (Move / Cut & Paste)](#4-mover-arquivos-move--cut--paste)
   - [5. Sincronizacao com Filtros Avancados](#5-sincronizacao-com-filtros-avancados)
+- [Analisar e Resolver Divergencias](#analisar-e-resolver-divergencias)
+- [Flags Personalizadas (Parametros Livres)](#flags-personalizadas-parametros-livres)
 - [Recursos Avancados e Corporativos](#recursos-avancados-e-corporativos)
 - [Automacao e Agendamento de Tarefas (Task Scheduler)](#automacao-e-agendamento-de-tarefas-task-scheduler)
 - [Referencia Completa de Parametros CLI](#referencia-completa-de-parametros-cli)
@@ -56,7 +59,10 @@ O **RoboCopy Manager** oferece o melhor dos dois mundos:
 | **Temas Escuro e Claro** | Depende do SO | Nao | Limitado | **Alternancia Imediata Dark/Light** |
 | **Botoes Informativos (i)** | Nao | Nao | Documentacao web | **Tooltips Contextuais Integrados** |
 | **Sincronizacao 2-Way (Fusao)** | Nao | Exige scripts manuais | Sim | **Automatico em 2 Etapas Integradas** |
+| **Lista o que esta diferente** | Nao | Exige ler o log | Sim (Analyze) | **Tabela com caminho, lado e tamanho** |
+| **Escolher a acao de cada arquivo** | Nao | Nao | Sim | **Copiar A->B, B->A, Excluir ou Ignorar** |
 | **Simulacao Segura (Dry-Run)** | Nao | `/L` manual | Analise previa | **1 Clique com Relatorio Completo** |
+| **Parametros livres do Robocopy** | Nao | Sim (decorar tudo) | Limitado | **Campo de Flags Personalizadas com aviso** |
 | **Preservacao Permissoes NTFS** | Incompleta | `/COPYALL` manual | Sim | **Ativacao Visual em 1 Clique** |
 | **Modo Backup Privilegiado** | Nao | `/ZB` manual | Sim | **Suporte Nativo a `SeBackupPrivilege`** |
 | **Custo / Licenca** | Embutido | Embutido | Proprietario Pago | **100% Gratuito e Open Source (MIT)** |
@@ -158,6 +164,44 @@ A interface grafica foi projetada com arquitetura focada no usuario final e em e
 - **Console de Streaming em Tempo Real**: Monitor integrado com auto-scroll que exibe linha a linha a saida do Robocopy, incluindo percentual de transferencia, velocidade e tabela resumo final de arquivos copiados, ignorados e falhados.
 - **Dialogos Nativos do Windows Explorer**: Botoes "Procurar..." que abrem a selecao nativa de pastas do Windows, alem de aceitar caminhos colados com ou sem aspas e caminhos de rede UNC (`\\servidor\compartilhamento`).
 - **Validacao Proativa Contra Perda de Dados**: O sistema impede operacoes caso a Origem seja identica ao Destino, avisa se a pasta de origem nao existir e alerta com destaque vermelho antes de qualquer operacao destrutiva (`/MIR` ou `/MOVE`).
+- **Botao de Ajuda do Status `?`**: Ao lado da mensagem final (ex: `Status: [2] Aviso`) existe um botao que abre a explicacao completa do codigo de saida: o que cada bit significa, qual o impacto real nos seus arquivos, o que fazer para resolver e qual foi o resultado de cada etapa executada.
+- **Atalho "Resolver Divergencias"**: Quando a execucao termina com arquivos extras ou incompativeis, um botao aparece no rodape e leva direto para a analise item a item na Central de Sincronizacao.
+
+---
+
+## Console Colorido e Painel de Ocorrencias
+
+O monitor de execucao possui duas abas complementares:
+
+**Aba "Console ao Vivo"** - a saida completa do Robocopy com destaque de sintaxe por tipo de evento (funciona tanto em Windows em portugues quanto em ingles):
+
+| Cor | Tipo de linha | Exemplo da saida do Robocopy |
+| :--- | :--- | :--- |
+| Verde | Arquivo novo copiado | `Novo Arquivo` / `New File` |
+| Azul claro | Arquivo atualizado | `Mais Recente` / `Newer` / `Changed` |
+| Amarelo | Item extra no destino | `*Arquivo EXTRA` / `*EXTRA File` / `*EXTRA Dir` |
+| Laranja | Item incompativel | `*INCOMPATIVEL` / `*Mismatch` |
+| Vermelho | Falha ou acesso negado | `ERRO 5 (0x00000005)` / `Acesso negado` |
+| Azul | Cabecalho de etapa | `>>> [ETAPA 1 DE 2]` |
+
+**Aba "Ocorrencias"** - uma tabela que recolhe automaticamente do log **apenas o que exige decisao**, sem que voce precise procurar no meio do texto:
+
+```
++--------------------------------------------------------------------------------------+
+| Tipo de Ocorrencia | Tamanho  | Caminho completo do item                              |
++--------------------------------------------------------------------------------------+
+| Arquivo EXTRA      |   512 B  | D:\Destino\relatorio_antigo.bak                        |
+| Pasta EXTRA        |      -   | D:\Destino\cache_temporario\                           |
+| Incompatibilidade  |      -   | D:\Destino\config                                     |
+| FALHA              |  1,2 MB  | C:\Origem\banco_em_uso.mdb                            |
++--------------------------------------------------------------------------------------+
+Total: 4  |  Arquivos/Pastas EXTRA: 2  |  Falhas e acessos negados: 1  |  Incompatibilidades: 1
+```
+
+- Filtros de um clique: **Todas**, **Arquivos EXTRA**, **Falhas** e **Incompatibilidades**.
+- **Exportar CSV** gera a planilha com tipo, tamanho, caminho e a linha original do Robocopy.
+- **Abrir Pasta** (ou duplo clique) localiza o item diretamente no Windows Explorer.
+- Mensagens de detalhe como `Acesso negado.` sao anexadas ao erro correspondente, e nao viram linhas soltas.
 
 ---
 
@@ -184,6 +228,14 @@ Para 90% das tarefas cotidianas, basta selecionar a Origem, o Destino e escolher
 - **O que faz**: Transfere os arquivos para a pasta de destino e, imediatamente apos a confirmacao de escrita correta, remove os arquivos da pasta de origem (equivalente ao recortar e colar do Windows Explorer, porem com verificacao de integridade).
 - **Parametros Robocopy**: `/MOVE /E /R:1 /W:3`
 - **Uso ideal**: Liberacao de espaco em disco, arquivamento de logs e organizacao de pastas de downloads.
+
+### 5. Sincronizacao Dupla (2 vias, em um clique)
+- **O que faz**: Com um unico clique executa a rotina completa em duas etapas automaticas: **Etapa 1 (Origem -> Destino)** e **Etapa 2 (Destino -> Origem)**, ambas com `/XO` (somente o que for mais novo). Nenhum arquivo e apagado em nenhum dos lados.
+- **Parametros Robocopy**: `/E /XO /R:3 /W:5` aplicados nas duas direcoes.
+- **Status final**: o rodape exibe o **resultado consolidado** das duas etapas. Se a Etapa 1 apontou arquivos extras e a Etapa 2 trouxe esses arquivos de volta, a divergencia foi resolvida e o status final indica sucesso completo em vez de continuar avisando sobre pendencias.
+- **Uso ideal**: notebook e servidor, dois computadores da mesma equipe, pasta local e pendrive usados de forma independente.
+
+> O mesmo modo tambem esta disponivel como caixa de selecao em **Opcoes Avancadas > Estrutura e Modos** e pelo parametro `--two-way` no terminal.
 
 ---
 
@@ -245,6 +297,104 @@ Ao clicar no botao **"Sincronizar Pastas (Modo GoodSync)"**, uma interface espec
 - Permite definir nomes de pastas a serem ignoradas (`/XD "node_modules" ".git" "cache"`).
 - Suporta limitacao de tamanho maximo de arquivo (`/MAX:<bytes>`).
 - Suporta selecao por idade minima ou maxima de modificacao (`/MINAGE:<dias>`).
+
+---
+
+## Analisar e Resolver Divergencias
+
+Saber que "existem divergencias" nao resolve nada se o programa nao diz **quais arquivos**, **em que caminho** e **o que fazer com cada um**. E exatamente isso que o painel **Analisar e Resolver Divergencias**, dentro da Central de Sincronizacao, entrega:
+
+```
+1. ANALISAR  ->  2. REVISAR E AJUSTAR AS ACOES  ->  3. APLICAR
+```
+
+### Passo 1 - Analisar (nao altera nada)
+
+O botao **"Analisar Diferencas (nao altera nada)"** roda o Robocopy em modo **somente-listagem** (`/L /MIR /FP /BYTES`). O `/MIR` combinado com `/L` e o que faz o Robocopy **relatar** tambem os itens que existem apenas no destino, sem apagar coisa alguma: nenhum arquivo e copiado, movido ou excluido nessa etapa.
+
+### Passo 2 - Revisar item a item
+
+O resultado vira uma tabela com uma linha por divergencia:
+
+```
++-------------------------------------------------------------------------------------------------+
+| Acao a executar      | Situacao encontrada    | Existe em | Tamanho | Caminho                    |
++-------------------------------------------------------------------------------------------------+
+| Copiar para o Destino| Novo Arquivo           | Origem    | 1,0 KB  | relatorio.docx             |
+| Copiar para o Destino| Mais recente na origem | Origem    | 20,0 KB | sub\planilha.xlsx          |
+| Copiar para a Origem | Mais antigo na origem  | Origem    | 4,0 KB  | notas.txt                  |
+| Copiar para a Origem | Arquivo EXTRA          | Destino   | 512 B   | antigo.bak                 |
+| Copiar para a Origem | Pasta EXTRA            | Destino   |    -    | lixo\                      |
+| Ignorar              | Incompatibilidade      | Destino   |    -    | config                     |
++-------------------------------------------------------------------------------------------------+
+Plano atual: 2 -> destino | 3 -> origem | 0 exclusoes | 1 ignorado
+```
+
+| Situacao | O que significa na pratica |
+| :--- | :--- |
+| **Novo Arquivo / Nova Pasta** | Existe so na origem e ainda nao foi para o destino. |
+| **Mais recente na origem** | Existe dos dois lados, mas a versao da origem e mais nova. |
+| **Mais antigo na origem** | Existe dos dois lados, e quem esta mais novo e o **destino**. |
+| **Conteudo alterado** | Mesmo horario nos dois lados, porem tamanho/conteudo diferente. |
+| **Arquivo EXTRA / Pasta EXTRA** | Existe so no destino: foi apagado da origem ou criado direto no destino. |
+| **Incompatibilidade** | O mesmo nome e arquivo de um lado e pasta do outro. Exige renomeacao manual. |
+
+Recursos da tabela:
+
+- **Selecionar uma linha** mostra a explicacao daquela situacao e **os caminhos completos dos dois lados** (incluindo onde o item ainda nao existe).
+- **Acoes em lote** para os itens selecionados (Ctrl+clique ou Shift+clique): *Copiar para o Destino*, *Copiar para a Origem*, *Excluir do Destino* e *Ignorar*. **Duplo clique** alterna a acao de um item.
+- Acoes impossiveis sao bloqueadas: um arquivo que so existe na origem nao pode ser "excluido do destino", e itens incompativeis so aceitam *Ignorar*.
+- **Filtros**: Todas, So na Origem, So no Destino, Atualizacoes e Marcadas para excluir.
+- **Restaurar sugestao do modo** devolve todas as acoes ao padrao do modo GoodSync selecionado (trocar de modo tambem re-sugere tudo automaticamente).
+- **Exportar Lista CSV** gera a planilha com acao, situacao, lado, tamanho, caminho relativo e os dois caminhos absolutos.
+- **Abrir no Explorer** localiza o item selecionado no Windows.
+
+### Acao sugerida por modo
+
+| Situacao | Espelhamento Rigido | Atualizacao sem Exclusao | Sincronizacao Bidirecional |
+| :--- | :--- | :--- | :--- |
+| Novo / Mais recente na origem | Copiar para o Destino | Copiar para o Destino | Copiar para o Destino |
+| Mais antigo na origem | Copiar para o Destino | Ignorar | Copiar para a Origem |
+| Arquivo / Pasta EXTRA | **Excluir do Destino** | Ignorar | Copiar para a Origem |
+| Incompatibilidade | Ignorar | Ignorar | Ignorar |
+
+### Passo 3 - Aplicar
+
+**"Aplicar Acoes Selecionadas"** executa exatamente o que esta na coluna *Acao*, e exibe antes um resumo com a contagem de copias e a lista dos itens que serao apagados. A execucao segue regras de seguranca:
+
+- Arquivos da mesma pasta sao agrupados em uma unica chamada do Robocopy, com apenas os nomes escolhidos - **sem `/MIR`, sem `/PURGE` e sem `/MOVE`**.
+- **Todas as copias acontecem antes de qualquer exclusao.**
+- Itens dentro de uma pasta que sera apagada (ou copiada inteira) nao sao processados duas vezes.
+- Ao final o sistema oferece uma nova analise para confirmar que nao sobrou divergencia.
+
+> No terminal, o parametro `--analyze` imprime essa mesma lista de divergencias sem alterar nada.
+
+---
+
+## Flags Personalizadas (Parametros Livres)
+
+Nem todo parametro do Robocopy tem uma caixa dedicada na tela. O campo **"Flags Personalizadas"** (disponivel em *Opcoes Avancadas > Comando Interno* e tambem dentro da Central de Sincronizacao) aceita qualquer argumento digitado, que e anexado ao final do comando exatamente como escrito.
+
+Botoes de atalho adicionam e removem as flags mais pedidas:
+
+| Flag | Para que serve |
+| :--- | :--- |
+| `/PURGE` | Apaga do destino os arquivos que nao existem mais na origem, sem espelhar o resto. |
+| `/MIR` | Espelhamento completo (copia tudo e apaga o que nao esta na origem). |
+| `/FFT` | Tolerancia de 2 segundos nos horarios - essencial para pendrives, NAS, Linux e FAT32. |
+| `/Z` | Modo reiniciavel: continua a transferencia de onde parou se a rede cair. |
+| `/XX` | Ignora completamente os arquivos extras do destino. |
+| `/SL` | Copia links simbolicos como links, em vez do conteudo apontado. |
+| `/NOSD` | Nao exibe o diretorio de origem no relatorio. |
+| `/256` | Desativa o suporte a caminhos com mais de 256 caracteres. |
+
+O campo valida o que foi digitado em tempo real e avisa em tres situacoes:
+
+1. **Parametro que apaga arquivos** (`/MIR`, `/PURGE`, `/MOVE`, `/MOV`) - alem do aviso, uma confirmacao extra e exigida antes de iniciar.
+2. **Parametro ja controlado pela interface** (`/MT`, `/R`, `/W`, `/COPY`, `/LOG`...) - avisa sobre o risco de conflito com o valor definido na tela.
+3. **Texto que nao parece uma flag** (nao comeca com `/`).
+
+Pelo terminal, o mesmo recurso esta em `--extra-args` (ou `-x`).
 
 ---
 
@@ -315,6 +465,31 @@ O script `RoboCopy.ps1` e o utilitario `RoboCopyCLI.exe` aceitam os seguintes ar
 | `-ExcludeFiles` | String | `""` | Lista de extensoes ou arquivos a ignorar (ex: `*.tmp, *.bak`). |
 | `-ExcludeDirs` | String | `""` | Lista de pastas a ignorar (ex: `node_modules, .git, temp`). |
 
+Ja o terminal em Python (`robocopy_cli.py` / `RoboCopyCLI.exe`) aceita:
+
+| Parametro | Descricao / Exemplo |
+| :--- | :--- |
+| `source` / `destination` | Pastas de origem e destino (posicionais). Sem eles, abre o menu interativo. |
+| `--mode` | `backup`, `fast`, `mirror`, `move`, `goodsync_mirror`, `goodsync_update`, `goodsync_two_way`, `goodsync_move`, `goodsync_filter`. |
+| `--dry-run`, `-L` | Simula sem gravar nada (`/L`). |
+| `--two-way` | **Sincronizacao dupla**: executa Origem -> Destino e depois Destino -> Origem, com status consolidado. |
+| `--analyze` | **Lista as divergencias** entre as pastas (quais arquivos, em que caminho, de que lado) sem alterar nada. |
+| `--extra-args`, `-x` | **Flags personalizadas** do Robocopy (ex: `-x "/FFT /Z"`), com aviso para parametros destrutivos. |
+| `--threads` | Threads simultaneas (`/MT`). |
+| `--exclude-files`, `-xf` | Arquivos/extensoes a ignorar (`/XF`). |
+| `--exclude-dirs`, `-xd` | Pastas a ignorar (`/XD`). |
+| `--admin` | Solicita elevacao de Administrador imediatamente. |
+
+```bash
+# Ver o que esta diferente entre as duas pastas, sem tocar em nada
+python robocopy_cli.py C:\Origem D:\Destino --analyze
+
+# Sincronizacao dupla em um comando, com tolerancia de horario para pendrive
+python robocopy_cli.py C:\Origem E:\Pendrive --two-way -x "/FFT"
+```
+
+A saida ao vivo no terminal tambem sai colorida por tipo de evento, e ao final o CLI imprime a lista de ocorrencias, o resultado de cada etapa e a explicacao completa do codigo de saida.
+
 ---
 
 ## Tabela de Codigos de Saida do Robocopy
@@ -332,6 +507,19 @@ Diferente de comandos tradicionais onde qualquer codigo diferente de zero e um e
 | **16** | Erro fatal. Robocopy nao conseguiu acessar a origem, destino ou parametros invalidos. | **Erro Fatal (Acesso ou Sintaxe)** |
 
 > O RoboCopy Manager analisa e traduz automaticamente esses codigos, informando ao usuario em linguagem clara o desfecho exato da operacao.
+
+O codigo e uma **soma de sinalizadores**: `3` significa `1` (arquivos copiados) **+** `2` (arquivos extras detectados). O botao `?` ao lado do status decompoe essa soma, explica o impacto de cada bit e sugere o que fazer.
+
+**Consolidacao em operacoes de varias etapas**: na sincronizacao dupla, os codigos das duas etapas sao unidos em um unico resultado. Como a Etapa 2 copia de volta os arquivos que a Etapa 1 apontou como extras, o sinalizador `2` deixa de ser reportado quando as duas etapas terminam sem falha - o status final passa a indicar sucesso completo:
+
+| Etapa 1 | Etapa 2 | Status consolidado |
+| :---: | :---: | :--- |
+| `2` (extras no destino) | `1` (copiados de volta) | **`1` Sucesso** - a divergencia foi resolvida pela etapa seguinte |
+| `3` | `3` | **`1` Sucesso** |
+| `6` (extras + incompativeis) | `1` | **`5`** - a incompatibilidade continua exigindo decisao manual |
+| `2` | `8` (falha de copia) | **`10`** - houve falha real, nada e descontado |
+
+O detalhamento etapa a etapa continua visivel no console, no botao `?` e no rodape (`resultado consolidado de 2 etapas`).
 
 ---
 
@@ -356,7 +544,8 @@ RoboCopyManager/
 |   |-- test_cli_integration.py    # Testes de integracao da interface TUI/CLI
 |   |-- test_gui_integration.py    # Testes visuais da GUI, widgets e alternancia Dark/Light
 |   |-- test_powershell_script.py  # Testes sintaticos e funcionais do RoboCopy.ps1
-|   +-- test_robocopy.py           # Testes unitarios do motor robocopy_engine
+|   |-- test_robocopy.py           # Testes unitarios do motor robocopy_engine
+|   +-- test_sync_center.py        # Testes da analise de divergencias, plano de acoes e exit codes
 |-- build_exe.py                   # Script de compilacao da GUI com PyInstaller
 |-- build_cli_exe.py               # Script de compilacao da CLI com PyInstaller
 |-- presets.py                     # Dicionario centralizado de predefinicoes e tooltips
@@ -365,6 +554,7 @@ RoboCopyManager/
 |-- robocopy_cli.py                # Interface de linha de comando Python
 |-- robocopy_engine.py             # Motor agnostico de geracao e execucao de comandos
 |-- robocopy_gui.py                # Aplicativo desktop em Tkinter com suporte Dark/Light
+|-- sync_analyzer.py               # Analise de divergencias, sugestao de acoes e execucao do plano
 |-- RoboCopy.ps1                   # Script PowerShell autonomo de raiz (para Web One-Liner)
 |-- Run.bat                        # Inicializador em lote da raiz
 |-- .gitignore                     # Filtro de arquivos temporarios e caches
@@ -375,7 +565,7 @@ RoboCopyManager/
 
 ## Garantia de Qualidade e Bateria de Testes
 
-O projeto conta com **71 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
+O projeto conta com **137 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
 
 ```bash
 pytest tests/ -v
@@ -386,15 +576,29 @@ Exemplo de execucao da suite:
 ============================= test session starts =============================
 platform win32 -- Python 3.10+, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\...\RoboCopyManager, configfile: pytest.ini
-collected 71 items
+collected 137 items
 
-tests\test_audit_all_options.py .............................            [ 40%]
-tests\test_cli_integration.py ....                                       [ 46%]
-tests\test_gui_integration.py ..........                                 [ 60%]
-tests\test_powershell_script.py .....                                    [ 67%]
-tests\test_robocopy.py .......................                           [100%]
+tests\test_audit_all_options.py .............................            [ 21%]
+tests\test_cli_integration.py ....                                       [ 24%]
+tests\test_gui_integration.py .....................                      [ 40%]
+tests\test_powershell_script.py .....                                    [ 43%]
+tests\test_robocopy.py .......................                           [ 60%]
+tests\test_sync_center.py .......................................................  [100%]
 
-============================= 71 passed in 3.70s ==============================
+============================= 137 passed in 5.10s =============================
+```
+
+A suite cobre, entre outros pontos:
+
+```
+- Leitura da saida do Robocopy em portugues E em ingles
+- Cabecalho do resumo (que contem as palavras FALHA e Incompativel) nao vira ocorrencia
+- Consolidacao de exit codes em operacoes de duas etapas
+- Analise de divergencias: caminho, lado, tamanho e acao sugerida por modo
+- Plano de acoes: agrupamento por pasta, exclusoes sempre depois das copias,
+  itens dentro de pasta apagada nao processados duas vezes
+- Comando de cada etapa do plano nunca recebe /MIR, /PURGE ou /MOVE
+- Criacao e exclusao reais em disco, inclusive em modo simulacao
 ```
 
 ---

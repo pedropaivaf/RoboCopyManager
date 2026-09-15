@@ -8,6 +8,7 @@ import subprocess
 import threading
 import re
 import shlex
+import unicodedata
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Callable, Any
 
@@ -32,6 +33,460 @@ def interpret_exit_code(code: int) -> tuple[str, str, str]:
         return ("Concluído com avisos", f"Operação concluída sem erros fatais (código {code}).", "warning")
     else:
         return ("Falha na Cópia", f"Robocopy finalizado com código de erro {code}.", "error")
+
+
+# =============================================================================
+# INTERPRETAÇÃO DETALHADA DOS CÓDIGOS DE SAÍDA (BITS DO ROBOCOPY)
+# =============================================================================
+# O código de saída do RoboCopy é um conjunto de bits somados. Ex.: 3 = 1 + 2.
+EXIT_CODE_BITS = {
+    1: (
+        "Arquivos copiados",
+        "Pelo menos um arquivo novo ou atualizado foi gravado no destino.",
+        "success",
+    ),
+    2: (
+        "Arquivos extras no destino",
+        "Existem arquivos ou pastas no destino que não estão na origem. "
+        "Nada foi perdido: o RoboCopy apenas avisa que os dois lados estão diferentes.",
+        "warning",
+    ),
+    4: (
+        "Itens incompatíveis",
+        "Um mesmo nome existe como arquivo de um lado e como pasta do outro. "
+        "Esses itens precisam de decisão manual: o RoboCopy não consegue resolver sozinho.",
+        "warning",
+    ),
+    8: (
+        "Falha ao copiar arquivos",
+        "Alguns arquivos não puderam ser copiados (bloqueados por outro programa, "
+        "sem permissão de leitura ou caminho longo demais).",
+        "error",
+    ),
+    16: (
+        "Erro fatal",
+        "O RoboCopy não conseguiu iniciar: caminho inválido, unidade inacessível, "
+        "acesso negado ou parâmetro incorreto. Nenhuma cópia foi realizada.",
+        "error",
+    ),
+}
+
+# Sugestão prática para o usuário, por bit acionado.
+EXIT_CODE_ACTIONS = {
+    2: "Use a Central de Sincronização para listar os arquivos extras e escolher o que fazer com cada um.",
+    4: "Abra o painel de Ocorrências e renomeie manualmente os itens incompatíveis antes de sincronizar novamente.",
+    8: "Feche os programas que estejam usando os arquivos e reexecute. Se persistir, execute como Administrador.",
+    16: "Confira se os caminhos de origem e destino existem e se você tem permissão de acesso.",
+}
+
+
+def decompose_exit_code(code: int) -> List[int]:
+    """Decompõe o código de saída do RoboCopy nos bits que o formam (ex.: 3 -> [1, 2])."""
+    if code is None or code <= 0:
+        return []
+    return [bit for bit in (1, 2, 4, 8, 16) if code & bit]
+
+
+def explain_exit_code(code: int, step_results: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Texto didático explicando o código de saída, o impacto real e o que fazer."""
+    title, desc, _category = interpret_exit_code(code)
+
+    lines = [f"Código de saída do RoboCopy: {code} ({title})", desc, ""]
+
+    bits = decompose_exit_code(code)
+    if bits:
+        lines.append("O que esse número significa (a soma dos sinalizadores):")
+        for bit in bits:
+            bit_title, bit_desc, _cat = EXIT_CODE_BITS[bit]
+            lines.append(f"  [{bit}] {bit_title}: {bit_desc}")
+    else:
+        lines.append("Nenhum sinalizador acionado: origem e destino já estavam sincronizados.")
+
+    actions = [EXIT_CODE_ACTIONS[bit] for bit in bits if bit in EXIT_CODE_ACTIONS]
+    if actions:
+        lines.append("")
+        lines.append("Como resolver:")
+        for action in actions:
+            lines.append(f"  - {action}")
+
+    if step_results:
+        lines.append("")
+        lines.append("Resultado de cada etapa executada:")
+        for step in step_results:
+            lines.append(
+                f"  - {step.get('label', 'Etapa')}: [{step.get('code')}] {step.get('title', '')}"
+            )
+        if len(step_results) > 1:
+            lines.append("")
+            lines.append(
+                "O status acima já é o resultado consolidado: divergências apontadas em uma "
+                "etapa e resolvidas pela etapa seguinte não contam como pendência."
+            )
+
+    lines.append("")
+    lines.append("Referência: 0 a 7 indicam sucesso (com ou sem avisos). 8 ou mais indicam falha real.")
+    return "\n".join(lines)
+
+
+def consolidate_exit_codes(codes: List[Optional[int]], two_way: bool = False) -> int:
+    """
+    Consolida os códigos de saída de uma operação de várias etapas em um único resultado.
+
+    Os códigos do RoboCopy são bits somados, portanto a união (OR) preserva todos os
+    sinalizadores. Em sincronização bidirecional concluída sem falhas, o sinalizador de
+    "arquivos extras" (bit 2) apontado por uma etapa é resolvido pela etapa inversa,
+    que copia esses arquivos de volta, e por isso deixa de ser reportado.
+    """
+    valid = [c for c in codes if c is not None]
+    if not valid:
+        return 0
+
+    combined = 0
+    for code in valid:
+        if code < 0:
+            return 16
+        combined |= code
+
+    if two_way and len(valid) >= 2 and all(c < 8 for c in valid):
+        combined &= ~2
+
+    return combined
+
+
+# =============================================================================
+# CLASSIFICAÇÃO E LEITURA DAS LINHAS DE SAÍDA DO ROBOCOPY
+# =============================================================================
+# Rótulos legíveis de cada categoria reconhecida no log.
+LOG_CATEGORY_LABELS = {
+    "new_file": "Novo Arquivo",
+    "new_dir": "Nova Pasta",
+    "extra_file": "Arquivo EXTRA",
+    "extra_dir": "Pasta EXTRA",
+    "lonely": "Somente no destino",
+    "mismatch": "Incompatibilidade",
+    "newer": "Mais recente na origem",
+    "older": "Mais antigo na origem",
+    "changed": "Conteúdo alterado",
+    "tweaked": "Ajustado",
+    "same": "Idêntico",
+    "deleted": "Excluído",
+    "error": "FALHA",
+    "warning": "Aviso",
+    "step": "Etapa",
+    "summary": "Resumo",
+    "banner": "Cabeçalho",
+    "progress": "Progresso",
+    "plain": "",
+}
+
+# Categorias que representam uma ocorrência que o usuário precisa revisar.
+OCCURRENCE_CATEGORIES = ("extra_file", "extra_dir", "lonely", "mismatch", "error")
+
+# Categorias que representam divergência real entre origem e destino.
+DIFFERENCE_CATEGORIES = (
+    "new_file", "new_dir", "newer", "older", "changed",
+    "extra_file", "extra_dir", "lonely", "mismatch",
+)
+
+
+def normalize_text(text: str) -> str:
+    """Remove acentuação e converte para maiúsculas para comparações independentes de idioma."""
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).upper()
+
+
+# Linhas emitidas pelo próprio RoboCopy Manager (não pelo robocopy.exe).
+_RE_ENGINE_STEP = re.compile(r"^\s*>>>")
+_RE_ENGINE_ERROR = re.compile(r"^\s*\[(?:ERRO|ERROR|FALHA)")
+_RE_ENGINE_WARNING = re.compile(r"^\s*\[(?:AVISO|ATEN|OPERACAO|WARNING)")
+_RE_ENGINE_BANNER = re.compile(r"^\s*(?:={3,}|-{3,})\s*$")
+_RE_ENGINE_LABEL = re.compile(r"^\s*(?:INICIO|COMANDO|HORARIO|CONCLUSAO|ETAPA|RESULTADO)\s*:")
+
+# Cabeçalho e rodapé do próprio robocopy.exe.
+_RE_SUMMARY_HEADER = re.compile(r"^\s*TOTAL\s+(?:COPIAD|COPIED)")
+_RE_SUMMARY_ROW = re.compile(
+    r"^\s*(?:DIRET\w*|DIRS|ARQUIVOS|FILES|BYTES|TEMPOS|TIMES|VELOCIDADE|SPEED|"
+    r"TERMINADO|ENDED|INICIADO|STARTED|ORIGEM|SOURCE|DESTINO|DEST|OPCOES|OPTIONS|ROBOCOPY)\s*:"
+)
+
+# Erros e avisos do robocopy.exe.
+_RE_ERROR = re.compile(
+    r"(?:^|\s)(?:ERROR|ERRO)\s+\d+|ACESSO NEGADO|ACCESS IS DENIED|"
+    r"(?:^|\s)FALHOU(?:\s|$)|(?:^|\s)FAILED(?:\s|$)"
+)
+_RE_RETRY = re.compile(r"AGUARDANDO\s+\d+|WAITING\s+\d+|REPETINDO|RETRYING")
+_RE_PROGRESS = re.compile(r"^\s*[\d.,]+%\s*$")
+
+# Classes de arquivo/pasta. Sempre no início da linha, antes do tamanho e do caminho.
+_CLASS_PATTERNS = [
+    ("extra_file", re.compile(r"^[\s\t]*\*\s*(?:EXTRA\s+FILE|ARQUIVO\s+EXTRA)\b")),
+    ("extra_dir", re.compile(r"^[\s\t]*\*\s*(?:EXTRA\s+DIR\w*|DIRETORIO\s+EXTRA|PASTA\s+EXTRA)\b")),
+    ("mismatch", re.compile(r"^[\s\t]*\*\s*(?:MISMATCH\w*|INCOMPAT\w*)\b")),
+    ("lonely", re.compile(r"^[\s\t]*\*\s*(?:LONELY|SOZINH\w*)\b")),
+    ("new_dir", re.compile(r"^[\s\t]*(?:NEW\s+DIR\w*|NOVO\s+DIR\w*|NOVA\s+PASTA)\b")),
+    ("new_file", re.compile(r"^[\s\t]*(?:NEW\s+FILE|NOVO\s+ARQUIVO|ARQUIVO\s+NOVO)\b")),
+    ("newer", re.compile(r"^[\s\t]*(?:NEWER|MAIS\s+RECENTE|MAIS\s+NOVO)\b")),
+    ("older", re.compile(r"^[\s\t]*(?:OLDER|MAIS\s+ANTIGO)\b")),
+    ("changed", re.compile(r"^[\s\t]*(?:CHANGED|ALTERAD\w*|MODIFICAD\w*)\b")),
+    ("tweaked", re.compile(r"^[\s\t]*(?:TWEAKED|AJUSTAD\w*)\b")),
+    ("same", re.compile(r"^[\s\t]*(?:SAME|IGUAL|MESMO)\b")),
+    ("deleted", re.compile(r"^[\s\t]*(?:DELETING|DELETED|EXCLUINDO|EXCLUID\w*|APAGANDO)\b")),
+]
+
+# Tamanho opcional seguido do caminho (campos separados por tabulação ou 2+ espaços).
+_RE_SIZE_PATH = re.compile(
+    r"^[\s\t]*(?:(?P<size>[\d.,]+\s*[kmgtb]?)(?:\t+|\s{2,}))?(?P<path>\S.*?)\s*$",
+    re.IGNORECASE,
+)
+
+_SIZE_MULTIPLIERS = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
+
+
+def parse_size(size_text: str) -> Optional[int]:
+    """Converte o tamanho impresso pelo RoboCopy ('1024', '1.2 m', '24,5 k') em bytes."""
+    if not size_text:
+        return None
+
+    cleaned = size_text.strip().lower().replace(" ", "")
+    if not cleaned:
+        return None
+
+    multiplier = 1
+    if cleaned[-1] in _SIZE_MULTIPLIERS:
+        multiplier = _SIZE_MULTIPLIERS[cleaned[-1]]
+        cleaned = cleaned[:-1]
+    elif cleaned.endswith("b"):
+        cleaned = cleaned[:-1]
+
+    if not cleaned:
+        return None
+
+    try:
+        if multiplier > 1:
+            # Com sufixo o separador é decimal (1.2 m / 1,2 m).
+            return int(float(cleaned.replace(",", ".")) * multiplier)
+        # Sem sufixo os separadores são de milhar.
+        digits = cleaned.replace(".", "").replace(",", "")
+        return int(digits) if digits.isdigit() else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def format_size(size_bytes: Optional[int]) -> str:
+    """Formata um tamanho em bytes de forma legível (para a tabela de ocorrências)."""
+    if size_bytes is None:
+        return "-"
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    value = float(size_bytes)
+    for unit in ("KB", "MB", "GB", "TB"):
+        value /= 1024.0
+        if value < 1024.0:
+            return f"{value:.1f} {unit}".replace(".", ",")
+    return f"{value:.1f} PB".replace(".", ",")
+
+
+def classify_log_line(line: str) -> str:
+    """
+    Identifica a natureza de uma linha do log (categoria usada no destaque colorido
+    e no painel de ocorrências). Reconhece a saída do RoboCopy em português e inglês.
+    """
+    if not line or not line.strip():
+        return "plain"
+
+    if _RE_ENGINE_STEP.match(line):
+        return "step"
+
+    normalized = normalize_text(line)
+
+    if _RE_ENGINE_ERROR.match(normalized):
+        return "error"
+    if _RE_ENGINE_WARNING.match(normalized):
+        return "warning"
+    if _RE_ENGINE_BANNER.match(normalized) or _RE_ENGINE_LABEL.match(normalized):
+        return "banner"
+    if _RE_PROGRESS.match(normalized):
+        return "progress"
+    if _RE_SUMMARY_HEADER.match(normalized) or _RE_SUMMARY_ROW.match(normalized):
+        return "summary"
+
+    for category, pattern in _CLASS_PATTERNS:
+        if pattern.match(normalized):
+            return category
+
+    if _RE_ERROR.search(normalized):
+        return "error"
+    if _RE_RETRY.search(normalized):
+        return "warning"
+
+    return "plain"
+
+
+@dataclass
+class LogEntry:
+    """Uma linha de log já interpretada: categoria, tamanho e caminho do item."""
+    category: str
+    label: str
+    path: str
+    size: Optional[int] = None
+    size_text: str = ""
+    raw: str = ""
+    message: str = ""
+
+    @property
+    def display_path(self) -> str:
+        """Caminho do item ou, quando o RoboCopy não informa um caminho, a mensagem original."""
+        return self.path or self.message or self.raw.strip()
+
+    @property
+    def is_occurrence(self) -> bool:
+        return self.category in OCCURRENCE_CATEGORIES
+
+
+def parse_log_entry(line: str) -> Optional[LogEntry]:
+    """
+    Converte uma linha do RoboCopy em um registro estruturado (categoria, tamanho, caminho).
+    Retorna None para linhas sem conteúdo aproveitável (banners, resumos, progresso).
+    """
+    if not line or not line.strip():
+        return None
+
+    category = classify_log_line(line)
+    if category in ("banner", "summary", "progress", "plain", "step"):
+        return None
+
+    raw = line.rstrip("\r\n")
+    label = LOG_CATEGORY_LABELS.get(category, category)
+
+    if category in ("error", "warning"):
+        return LogEntry(
+            category=category,
+            label=label,
+            path=_extract_error_path(raw),
+            raw=raw,
+            message=raw.strip(),
+        )
+
+    normalized = normalize_text(raw)
+    remainder = raw
+    for cat, pattern in _CLASS_PATTERNS:
+        if cat != category:
+            continue
+        match = pattern.match(normalized)
+        if match:
+            remainder = raw[match.end():]
+        break
+
+    parsed = _RE_SIZE_PATH.match(remainder)
+    if not parsed:
+        return LogEntry(category=category, label=label, path=remainder.strip(), raw=raw)
+
+    size_text = (parsed.group("size") or "").strip()
+    path = (parsed.group("path") or "").strip()
+
+    return LogEntry(
+        category=category,
+        label=label,
+        path=path,
+        size=parse_size(size_text),
+        size_text=size_text,
+        raw=raw,
+    )
+
+
+def _extract_error_path(line: str) -> str:
+    """Isola o caminho citado em uma linha de erro do RoboCopy (vazio quando não há)."""
+    match = re.search(r"([A-Za-z]:\\[^\r\n\"]+|\\\\[^\r\n\"]+)", line)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+# =============================================================================
+# FLAGS PERSONALIZADAS (PARÂMETROS LIVRES DIGITADOS PELO USUÁRIO)
+# =============================================================================
+# Parâmetros que apagam arquivos e por isso exigem confirmação explícita.
+DESTRUCTIVE_FLAGS = {
+    "/MIR": "espelha o destino e APAGA tudo o que não existir na origem",
+    "/PURGE": "APAGA do destino os arquivos que não existem mais na origem",
+    "/MOVE": "APAGA da origem os arquivos e as pastas depois de copiar",
+    "/MOV": "APAGA da origem os arquivos depois de copiar",
+}
+
+# Parâmetros controlados pela própria interface: repeti-los aqui gera conflito.
+_MANAGED_FLAGS = ("/L", "/TEE", "/NP", "/LOG", "/LOG+", "/COPY", "/DCOPY", "/MT", "/R", "/W")
+
+
+def analyze_extra_args(text: str) -> Dict[str, Any]:
+    """
+    Verifica as flags livres digitadas pelo usuário e devolve um diagnóstico:
+    quais apagam arquivos, quais duplicam opções da interface e quais não parecem flags.
+    """
+    tokens = split_windows_args(text or "")
+    destructive: List[str] = []
+    duplicated: List[str] = []
+    suspicious: List[str] = []
+
+    for token in tokens:
+        if not token.startswith("/"):
+            suspicious.append(token)
+            continue
+
+        base = token.split(":", 1)[0].upper()
+        if base in DESTRUCTIVE_FLAGS:
+            destructive.append(base)
+        elif base in _MANAGED_FLAGS:
+            duplicated.append(base)
+
+    messages: List[str] = []
+    if destructive:
+        details = "; ".join(f"{flag} {DESTRUCTIVE_FLAGS[flag]}" for flag in destructive)
+        messages.append(f"ATENÇÃO - parâmetro que apaga arquivos: {details}.")
+    if duplicated:
+        messages.append(
+            "Já controlado pela interface (o valor daqui pode entrar em conflito): "
+            + ", ".join(sorted(set(duplicated)))
+            + "."
+        )
+    if suspicious:
+        messages.append(
+            "Não parece um parâmetro do RoboCopy (flags começam com '/'): "
+            + ", ".join(suspicious)
+            + "."
+        )
+
+    return {
+        "tokens": tokens,
+        "destructive": destructive,
+        "duplicated": duplicated,
+        "suspicious": suspicious,
+        "warning": " ".join(messages),
+        "is_destructive": bool(destructive),
+    }
+
+
+def extract_occurrences(lines: List[str]) -> List["LogEntry"]:
+    """
+    Filtra de um log completo apenas as ocorrências que exigem atenção do usuário.
+    Linhas de detalhe de um erro (ex.: "Acesso negado.") são anexadas ao erro anterior
+    em vez de virarem uma ocorrência solta.
+    """
+    occurrences: List[LogEntry] = []
+    for line in lines:
+        entry = parse_log_entry(line)
+        if not entry or not entry.is_occurrence:
+            continue
+
+        if entry.category == "error" and not entry.path and occurrences:
+            previous = occurrences[-1]
+            if previous.category == "error":
+                detail = entry.message.strip()
+                if detail:
+                    previous.message = f"{previous.message} {detail}".strip()
+                continue
+
+        occurrences.append(entry)
+    return occurrences
 
 
 @dataclass
@@ -360,10 +815,17 @@ class RobocopyEngine:
         on_line("=" * 60 + "\n\n")
 
         full_output_lines = []
+        step_results: List[Dict[str, Any]] = []
         exit_code = 0
+        is_two_way = bool(config.is_two_way_sync)
+
+        def _register_step(label: str, code: int):
+            title, desc, _cat = interpret_exit_code(code)
+            step_results.append({"label": label, "code": code, "title": title, "desc": desc})
+            on_line(f"\n>>> {label} concluída: [{code}] {title} - {desc}\n")
 
         try:
-            if config.is_two_way_sync:
+            if is_two_way:
                 import copy
                 # ETAPA 1: Origem -> Destino
                 on_line(">>> [ETAPA 1 DE 2]: Copiando novidades da Origem para o Destino...\n\n")
@@ -374,6 +836,7 @@ class RobocopyEngine:
                 cfg1.mirror = False
                 cmd_args_1 = self.build_command_args(cfg1)
                 code1 = self._execute_single_step(cmd_args_1, full_output_lines, on_line)
+                _register_step("Etapa 1 de 2 (Origem -> Destino)", code1)
 
                 if not self._cancel_requested and self.is_running and code1 < 8:
                     on_line("\n>>> [ETAPA 2 DE 2]: Copiando novidades do Destino para a Origem...\n\n")
@@ -386,12 +849,22 @@ class RobocopyEngine:
                     cfg2.mirror = False
                     cmd_args_2 = self.build_command_args(cfg2)
                     code2 = self._execute_single_step(cmd_args_2, full_output_lines, on_line)
-                    exit_code = max(code1, code2)
+                    _register_step("Etapa 2 de 2 (Destino -> Origem)", code2)
                 else:
-                    exit_code = code1
+                    on_line(
+                        "\n[AVISO] A Etapa 2 (Destino -> Origem) não foi executada porque a "
+                        "Etapa 1 não pôde ser concluída.\n"
+                    )
+
+                exit_code = consolidate_exit_codes([s["code"] for s in step_results], two_way=True)
             else:
                 cmd_args = self.build_command_args(config)
                 exit_code = self._execute_single_step(cmd_args, full_output_lines, on_line)
+                title, desc, _cat = interpret_exit_code(exit_code)
+                step_results.append({
+                    "label": "Etapa única (Origem -> Destino)",
+                    "code": exit_code, "title": title, "desc": desc,
+                })
 
         except Exception as ex:
             on_line(f"\n[ERRO NA EXECUÇÃO]: {str(ex)}\n")
@@ -407,6 +880,12 @@ class RobocopyEngine:
                 self.process = None
 
         summary = self._parse_summary(full_output_lines)
+        summary["occurrences"] = extract_occurrences(full_output_lines)
+        summary["steps"] = step_results
+        summary["step_codes"] = [s["code"] for s in step_results]
+        summary["is_two_way"] = is_two_way
+        summary["raw_exit_code"] = exit_code
+
         if self._cancel_requested:
             exit_code = 16
             title = "Interrompido"
@@ -414,8 +893,16 @@ class RobocopyEngine:
         else:
             title, desc, status_cat = interpret_exit_code(exit_code)
 
+        summary["exit_code"] = exit_code
+        summary["explanation"] = explain_exit_code(exit_code, step_results)
+
         on_line("\n" + "-" * 60 + "\n")
-        on_line(f"Conclusão: [{exit_code}] {title} - {desc}\n")
+        if len(step_results) > 1:
+            for step in step_results:
+                on_line(f"{step['label']}: [{step['code']}] {step['title']}\n")
+            on_line(f"Resultado consolidado: [{exit_code}] {title} - {desc}\n")
+        else:
+            on_line(f"Conclusão: [{exit_code}] {title} - {desc}\n")
         on_line(f"Horário: {self._get_now_str()}\n")
         on_line("-" * 60 + "\n")
 

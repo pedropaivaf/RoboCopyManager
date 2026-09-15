@@ -13,12 +13,16 @@ from typing import Optional
 from robocopy_engine import (
     RobocopyConfig,
     RobocopyEngine,
+    analyze_extra_args,
+    classify_log_line,
+    explain_exit_code,
     interpret_exit_code,
 )
 from presets import (
     PRESETS,
     apply_preset_to_config,
 )
+from sync_analyzer import SyncAnalyzer
 
 
 class Colors:
@@ -46,6 +50,41 @@ class Colors:
     # Fundos
     BG_BLUE = "\033[44m"
     BG_DARK = "\033[40m"
+
+
+# Cor de cada tipo de linha do RoboCopy no terminal (mesmo critério da interface gráfica).
+CATEGORY_COLORS = {
+    "new_file": "\033[92m",     # verde claro
+    "new_dir": "\033[32m",      # verde
+    "extra_file": "\033[93m",   # amarelo
+    "extra_dir": "\033[93m",
+    "lonely": "\033[93m",
+    "mismatch": "\033[95m",     # magenta
+    "newer": "\033[96m",        # ciano
+    "older": "\033[36m",
+    "changed": "\033[96m",
+    "deleted": "\033[91m",
+    "error": "\033[91m",        # vermelho
+    "warning": "\033[93m",
+    "step": "\033[94m",         # azul
+    "summary": "\033[97m",
+    "banner": "\033[2m",
+    "same": "\033[2m",
+    "progress": "\033[2m",
+}
+
+
+def colorize_line(line: str) -> str:
+    """Aplica a cor correspondente ao tipo da linha, preservando a quebra original."""
+    stripped = line.rstrip("\r\n")
+    ending = line[len(stripped):]
+    if not stripped.strip():
+        return line
+
+    color = CATEGORY_COLORS.get(classify_log_line(stripped))
+    if not color:
+        return line
+    return f"{color}{stripped}{Colors.RESET}{ending}"
 
 
 def init_terminal():
@@ -240,10 +279,11 @@ def goodsync_submenu(cfg: RobocopyConfig) -> Optional[RobocopyConfig]:
         print(f"  {Colors.BRIGHT_CYAN}[3]{Colors.RESET} 3. Sincronização Bidirecional (2-Way Sync / Fusão) - Executa em 2 etapas A->B e B->A")
         print(f"  {Colors.BRIGHT_CYAN}[4]{Colors.RESET} 4. Mover Arquivos (Move / Cut & Paste)           - /E /MOVE /R:3 /W:5")
         print(f"  {Colors.BRIGHT_CYAN}[5]{Colors.RESET} 5. Sincronização com Filtro de Extensão/Tamanho    - /E /MAX:n /XF ...")
+        print(f"  {Colors.BRIGHT_YELLOW}[6]{Colors.RESET} 6. Analisar Divergências Agora                   - Lista o que está diferente sem alterar nada")
         print(f"  {Colors.WHITE}[0]{Colors.RESET} Voltar ao Menu Principal")
 
         try:
-            g_choice = input(f"\n{Colors.BOLD}Selecione o modo GoodSync [1-5, 0]:{Colors.RESET} ").strip()
+            g_choice = input(f"\n{Colors.BOLD}Selecione o modo GoodSync [1-6, 0]:{Colors.RESET} ").strip()
         except (KeyboardInterrupt, EOFError):
             return None
 
@@ -264,6 +304,8 @@ def goodsync_submenu(cfg: RobocopyConfig) -> Optional[RobocopyConfig]:
             if max_b:
                 c.max_size = max_b
             return c
+        elif g_choice == "6":
+            run_analysis(cfg, "goodsync_two_way")
         elif g_choice == "0":
             return None
 
@@ -301,8 +343,8 @@ def run_with_live_terminal(cfg: RobocopyConfig, engine: RobocopyEngine):
     print(f"{'=' * 72}{Colors.RESET}\n")
 
     def on_line(line: str):
-        # Transmite cada linha recebida do processo
-        print(line, end="")
+        # Transmite cada linha recebida do processo, já com destaque por tipo
+        print(colorize_line(line), end="")
 
     exit_code, title, desc, summary = engine.run_sync(cfg, on_line=on_line)
 
@@ -320,9 +362,72 @@ def run_with_live_terminal(cfg: RobocopyConfig, engine: RobocopyEngine):
     print(f"   Arquivos:   Total: {summary.get('files_total', '-')} | Copiados: {summary.get('files_copied', '-')} | Falhas: {summary.get('files_failed', '0')}")
     print(f"   Volume:     Total: {summary.get('bytes_total', '-')} | Copiado: {summary.get('bytes_copied', '-')}")
     print(f"   Velocidade: {summary.get('speed', '-')}")
+
+    steps = summary.get("steps") or []
+    if len(steps) > 1:
+        print(f"{Colors.BRIGHT_CYAN}{'-' * 72}{Colors.RESET}")
+        for step in steps:
+            print(f"   {step['label']}: [{step['code']}] {step['title']}")
+        print(f"   {Colors.BOLD}Consolidado das etapas: [{exit_code}] {title}{Colors.RESET}")
+
+    occurrences = summary.get("occurrences") or []
+    if occurrences:
+        print(f"{Colors.BRIGHT_CYAN}{'-' * 72}{Colors.RESET}")
+        print(f"   {Colors.BRIGHT_YELLOW}OCORRÊNCIAS QUE EXIGEM ATENÇÃO ({len(occurrences)}):{Colors.RESET}")
+        for entry in occurrences[:30]:
+            color = CATEGORY_COLORS.get(entry.category, "")
+            print(f"     {color}{entry.label:<20}{Colors.RESET} {entry.display_path}")
+        if len(occurrences) > 30:
+            print(f"     ... e mais {len(occurrences) - 30} item(ns). Use a interface gráfica para a lista completa.")
+
     print(f"{Colors.BRIGHT_CYAN}{'=' * 72}{Colors.RESET}\n")
+    print(f"{Colors.DIM}{explain_exit_code(exit_code, steps)}{Colors.RESET}\n")
 
     return exit_code
+
+
+def run_analysis(cfg: RobocopyConfig, mode: str = "goodsync_two_way") -> int:
+    """Lista as divergências entre origem e destino sem alterar nada em disco."""
+    print(f"\n{Colors.BRIGHT_CYAN}{'=' * 72}")
+    print("   ANÁLISE DE DIVERGÊNCIAS (somente leitura - nada será alterado)")
+    print(f"{'=' * 72}{Colors.RESET}\n")
+    print(f"   Origem : {cfg.source}")
+    print(f"   Destino: {cfg.destination}\n")
+
+    analysis = SyncAnalyzer().analyze_sync(cfg, mode=mode)
+
+    if analysis.exit_code >= 16 and not analysis.differences:
+        print(
+            f"{Colors.BRIGHT_RED}   Não foi possível concluir a análise. "
+            f"Verifique os caminhos e as permissões de acesso.{Colors.RESET}\n"
+        )
+        return 16
+
+    if not analysis.differences:
+        print(f"{Colors.BRIGHT_GREEN}   Origem e destino já estão sincronizados: nenhuma divergência.{Colors.RESET}\n")
+        return 0
+
+    print(f"   {Colors.BOLD}{analysis.summary_text()}{Colors.RESET}\n")
+    print(f"   {'AÇÃO SUGERIDA':<24}{'SITUAÇÃO':<26}{'LADO':<10}{'TAMANHO':>10}  CAMINHO")
+    print(f"   {'-' * 100}")
+
+    for diff in analysis.differences:
+        color = CATEGORY_COLORS.get(diff.category, "")
+        print(
+            f"   {color}{diff.action_label:<24}{diff.label:<26}{diff.side_label:<10}"
+            f"{diff.size_text:>10}{Colors.RESET}  {diff.relative_path}"
+        )
+
+    if analysis.errors:
+        print(f"\n   {Colors.BRIGHT_RED}Itens que não puderam ser lidos ({len(analysis.errors)}):{Colors.RESET}")
+        for entry in analysis.errors[:20]:
+            print(f"     {entry.display_path}")
+
+    print(
+        f"\n{Colors.DIM}   Para aplicar ações item a item (copiar para um lado, para o outro, excluir ou\n"
+        f"   ignorar), abra a Central de Sincronização na interface gráfica.{Colors.RESET}\n"
+    )
+    return 0
 
 
 def cli_main():
@@ -335,6 +440,9 @@ def cli_main():
                "  Backup Seguro:              python robocopy_cli.py C:\\Origem D:\\Destino --mode backup\n"
                "  GoodSync Espelhamento:      python robocopy_cli.py C:\\Origem D:\\Destino --mode goodsync_mirror\n"
                "  Simulação Rápida:           python robocopy_cli.py C:\\Origem D:\\Destino --dry-run\n"
+               "  Sincronização Dupla:        python robocopy_cli.py C:\\Origem D:\\Destino --two-way\n"
+               "  Ver o que está diferente:   python robocopy_cli.py C:\\Origem D:\\Destino --analyze\n"
+               "  Flags avançadas livres:     python robocopy_cli.py C:\\Origem D:\\Destino -x \"/FFT /Z\"\n"
     )
 
     parser.add_argument("source", nargs="?", help="Pasta de Origem")
@@ -345,6 +453,9 @@ def cli_main():
     parser.add_argument("--dry-run", "-L", action="store_true", help="Apenas simular sem modificar arquivos")
     parser.add_argument("--exclude-files", "-xf", help="Arquivos/extensões para excluir (/XF)")
     parser.add_argument("--exclude-dirs", "-xd", help="Diretórios para excluir (/XD)")
+    parser.add_argument("--extra-args", "-x", help="Flags personalizadas do RoboCopy (ex: \"/FFT /Z\")")
+    parser.add_argument("--two-way", action="store_true", help="Sincronização dupla: executa Origem->Destino e Destino->Origem")
+    parser.add_argument("--analyze", action="store_true", help="Apenas lista as divergências entre as pastas, sem alterar nada")
     parser.add_argument("--admin", action="store_true", help="Solicita elevação de Administrador imediatamente")
 
     args = parser.parse_args()
@@ -396,6 +507,24 @@ def cli_main():
 
     if args.exclude_dirs:
         cfg.exclude_dirs = args.exclude_dirs
+
+    if args.extra_args:
+        cfg.extra_args = args.extra_args
+        diagnosis = analyze_extra_args(cfg.extra_args)
+        if diagnosis["warning"]:
+            print(f"{Colors.BRIGHT_YELLOW}[AVISO] {diagnosis['warning']}{Colors.RESET}\n")
+
+    if args.two_way:
+        cfg.is_two_way_sync = True
+        cfg.mirror = False
+        cfg.move_all = False
+        cfg.move_files = False
+        cfg.copy_subdirs_empty = True
+        cfg.exclude_older = True
+
+    if args.analyze:
+        mode = args.mode if args.mode and args.mode.startswith("goodsync_") else "goodsync_two_way"
+        sys.exit(run_analysis(cfg, mode))
 
     engine = RobocopyEngine()
     exit_code = run_with_live_terminal(cfg, engine)

@@ -223,6 +223,246 @@ class TestGUIIntegration(unittest.TestCase):
         tip.hide_tip()
         self.assertIsNone(tip.tip_window)
 
+    # =========================================================================
+    # CONSOLE COLORIDO E PAINEL DE OCORRÊNCIAS
+    # =========================================================================
+    def test_gui_log_colorization(self):
+        """Cada tipo de linha do log recebe a tag de cor correspondente."""
+        self.app._clear_log()
+        self.app._append_log_line("\t  Novo Arquivo  \t\t      1024\tC:\\Origem\\a.docx\n")
+        self.app._append_log_line("\t*Arquivo EXTRA \t\t       512\tD:\\Destino\\b.bak\n")
+        self.app._append_log_line("2025/09/03 10:12:35 ERRO 5 (0x00000005) Copiando Arquivo C:\\Origem\\c.dat\n")
+        self.app.update_idletasks()
+
+        conteudo = self.app.log_textbox.get("1.0", "end")
+        self.assertIn("a.docx", conteudo)
+        # As três categorias precisam estar efetivamente aplicadas no texto.
+        for tag in ("cat_new_file", "cat_extra_file", "cat_error"):
+            self.assertTrue(self.app.log_textbox.tag_ranges(tag), f"Tag {tag} não foi aplicada.")
+
+    def test_gui_occurrences_panel_filters_the_log(self):
+        """O painel de ocorrências isola apenas EXTRA, falhas e incompatibilidades."""
+        self.app._clear_log()
+        self.app._append_log_line("\t  Novo Arquivo  \t\t      1024\tC:\\Origem\\a.docx\n")
+        self.app._append_log_line("\t*Arquivo EXTRA \t\t       512\tD:\\Destino\\b.bak\n")
+        self.app._append_log_line("\t*INCOMPATÍVEL  \t\t          \tD:\\Destino\\config\n")
+        self.app._append_log_line("2025/09/03 10:12:35 ERRO 5 (0x00000005) Copiando Arquivo C:\\Origem\\c.dat\n")
+        self.app._append_log_line("Acesso negado.\n")
+        self.app.update_idletasks()
+
+        # O arquivo novo não é ocorrência; os outros três são.
+        self.assertEqual(len(self.app.occurrences), 3)
+        self.assertEqual(len(self.app.tree_occurrences.get_children()), 3)
+        self.assertIn("Ocorrências: 3", self.app.lbl_occurrence_badge.cget("text"))
+
+        # O caminho completo precisa aparecer na tabela.
+        valores = [self.app.tree_occurrences.item(i, "values") for i in self.app.tree_occurrences.get_children()]
+        caminhos = [v[2] for v in valores]
+        self.assertIn(r"D:\Destino\b.bak", caminhos)
+        self.assertIn(r"C:\Origem\c.dat", caminhos)
+
+        # Filtros
+        self.app.occurrence_filter.set("Arquivos EXTRA")
+        self.app._on_occurrence_filter_change()
+        self.assertEqual(len(self.app.tree_occurrences.get_children()), 1)
+
+        self.app.occurrence_filter.set("Falhas")
+        self.app._on_occurrence_filter_change()
+        self.assertEqual(len(self.app.tree_occurrences.get_children()), 1)
+
+        self.app.occurrence_filter.set("Todas")
+        self.app._on_occurrence_filter_change()
+        self.assertEqual(len(self.app.tree_occurrences.get_children()), 3)
+
+        self.app._clear_log()
+        self.assertEqual(len(self.app.occurrences), 0)
+
+    def test_gui_status_explains_exit_code(self):
+        """O rodapé mostra o resultado consolidado e a ajuda traz a explicação completa."""
+        resumo = {
+            "steps": [
+                {"label": "Etapa 1 de 2 (Origem -> Destino)", "code": 2, "title": "Aviso", "desc": "x"},
+                {"label": "Etapa 2 de 2 (Destino -> Origem)", "code": 1, "title": "Sucesso", "desc": "y"},
+            ]
+        }
+        self.app._on_process_completed(1, "Sucesso", "Todos os arquivos foram copiados.", resumo)
+        self.app.update_idletasks()
+
+        status = self.app.lbl_status.cget("text")
+        self.assertIn("[1]", status)
+        self.assertIn("consolidado de 2 etapas", status)
+        self.assertIn("Etapa 1 de 2", self.app.tip_status.text)
+        self.assertIn("Etapa 2 de 2", self.app.tip_status.text)
+
+    def test_gui_resolve_button_appears_only_with_divergences(self):
+        """O atalho 'Resolver Divergências' só aparece quando há o que resolver."""
+        self.app._clear_log()
+        self.app._on_process_completed(1, "Sucesso", "Tudo copiado.", {"steps": []})
+        self.app.update_idletasks()
+        self.assertFalse(self.app.btn_resolve.winfo_manager())
+
+        self.app._on_process_completed(2, "Aviso", "Existem arquivos extras.", {"steps": []})
+        self.app.update_idletasks()
+        self.assertTrue(self.app.btn_resolve.winfo_manager())
+
+    # =========================================================================
+    # FLAGS PERSONALIZADAS E SINCRONIZAÇÃO DUPLA
+    # =========================================================================
+    def test_gui_custom_flags_reach_the_command(self):
+        """O campo de flags livres entra no comando e avisa sobre parâmetros perigosos."""
+        self.app.var_extra_args.set("/FFT /Z")
+        self.app.update_idletasks()
+        comando = self.app.cmd_display.get()
+        self.assertIn("/FFT", comando)
+        self.assertIn("/Z", comando)
+        self.assertEqual(self.app.extra_args_warning_labels[0].cget("text"), "")
+
+        # Atalho adiciona e remove a mesma flag
+        self.app._toggle_extra_flag("/PURGE")
+        self.assertIn("/PURGE", self.app.var_extra_args.get())
+        self.assertIn("APAGA", self.app.extra_args_warning_labels[0].cget("text"))
+        self.app._toggle_extra_flag("/PURGE")
+        self.assertNotIn("/PURGE", self.app.var_extra_args.get())
+
+        self.app.var_extra_args.set("")
+        self.app.update_idletasks()
+
+    def test_gui_two_way_sync_preset(self):
+        """O modo Sincronização Dupla gera as duas etapas no comando."""
+        self.app.entry_source.delete(0, "end")
+        self.app.entry_source.insert(0, r"C:\Origem")
+        self.app.entry_dest.delete(0, "end")
+        self.app.entry_dest.insert(0, r"D:\Destino")
+
+        self.app.selected_preset_key.set("goodsync_two_way")
+        self.app._on_preset_selected()
+        self.app.update_idletasks()
+
+        self.assertTrue(self.app.var_two_way.get())
+        cfg = self.app._gather_config_from_ui()
+        self.assertTrue(cfg.is_two_way_sync)
+
+        comando = self.app.cmd_display.get()
+        self.assertIn("Etapa 1", comando)
+        self.assertIn("Etapa 2", comando)
+        self.assertIn(r"robocopy C:\Origem D:\Destino", comando)
+        self.assertIn(r"robocopy D:\Destino C:\Origem", comando)
+
+        # Ativar espelhamento desliga a sincronização dupla (são incompatíveis)
+        self.app.var_mirror.set(True)
+        self.app._on_chk_mir_change()
+        self.assertFalse(self.app.var_two_way.get())
+
+        self.app.selected_preset_key.set("backup_incremental")
+        self.app._on_preset_selected()
+
+    # =========================================================================
+    # CENTRAL DE SINCRONIZAÇÃO: TABELA DE DIVERGÊNCIAS E AÇÕES
+    # =========================================================================
+    def _carregar_analise(self, modo="goodsync_two_way"):
+        from sync_analyzer import parse_analysis_output
+
+        linhas = [
+            "\t  Novo Arquivo  \t\t      1024\tC:\\Origem\\relatorio.docx",
+            "\t  Mais Antigo   \t\t      4096\tC:\\Origem\\notas.txt",
+            "\t*Arquivo EXTRA \t\t       512\tD:\\Destino\\antigo.bak",
+            "\t*Pasta EXTRA   \t\t          \tD:\\Destino\\lixo\\",
+            "\t*INCOMPATÍVEL  \t\t          \tD:\\Destino\\config",
+        ]
+        analise = parse_analysis_output(linhas, r"C:\Origem", r"D:\Destino", modo)
+        self.app.var_goodsync_mode.set(modo)
+        self.app._on_analysis_completed(analise)
+        self.app.update_idletasks()
+        return analise
+
+    def test_gui_difference_table_shows_paths_and_actions(self):
+        """A tabela informa qual arquivo, em que caminho, de que lado e com qual ação."""
+        self._carregar_analise()
+
+        self.assertEqual(len(self.app.tree_differences.get_children()), 5)
+        self.assertEqual(self.app.btn_apply_plan.cget("state"), "normal")
+
+        valores = {
+            self.app.tree_differences.item(i, "values")[4]: self.app.tree_differences.item(i, "values")
+            for i in self.app.tree_differences.get_children()
+        }
+        self.assertIn("relatorio.docx", valores)
+        self.assertEqual(valores["relatorio.docx"][0], "Copiar para o Destino")
+        self.assertEqual(valores["relatorio.docx"][1], "Novo Arquivo")
+        self.assertEqual(valores["relatorio.docx"][2], "Origem")
+        self.assertEqual(valores["antigo.bak"][2], "Destino")
+
+        self.assertIn("divergência", self.app.lbl_diff_summary.cget("text"))
+        self.assertIn("Plano atual", self.app.lbl_plan_preview.cget("text"))
+
+    def test_gui_difference_actions_can_be_changed(self):
+        """O usuário escolhe a ação de cada item, com bloqueio do que não faz sentido."""
+        from sync_analyzer import ACTION_DELETE_DEST
+
+        self._carregar_analise()
+        indice = next(
+            i for i in self.app.tree_differences.get_children()
+            if self.app.tree_differences.item(i, "values")[4] == "antigo.bak"
+        )
+        self.app.tree_differences.selection_set((indice,))
+        self.app._on_difference_select()
+        self.assertIn("Existe hoje no destino", self.app.lbl_diff_detail.cget("text"))
+
+        self.app._set_action_for_selected(ACTION_DELETE_DEST)
+        self.assertEqual(self.app.tree_differences.item(indice, "values")[0], "Excluir do Destino")
+        self.assertIn("1 exclusão", self.app.lbl_plan_preview.cget("text"))
+
+        # Dois cliques alternam para a próxima ação possível
+        self.app._cycle_difference_action()
+        self.assertNotEqual(self.app.tree_differences.item(indice, "values")[0], "Excluir do Destino")
+
+    def test_gui_difference_filters(self):
+        """Os filtros da tabela separam origem, destino, atualizações e exclusões."""
+        self._carregar_analise()
+
+        self.app.difference_filter.set("Só na Origem")
+        self.app._on_difference_filter_change()
+        self.assertEqual(len(self.app.tree_differences.get_children()), 1)
+
+        self.app.difference_filter.set("Só no Destino")
+        self.app._on_difference_filter_change()
+        self.assertEqual(len(self.app.tree_differences.get_children()), 2)
+
+        self.app.difference_filter.set("Todas")
+        self.app._on_difference_filter_change()
+        self.assertEqual(len(self.app.tree_differences.get_children()), 5)
+
+    def test_gui_mode_change_updates_suggested_actions(self):
+        """Trocar o modo GoodSync re-sugere a ação de cada divergência já listada."""
+        self._carregar_analise("goodsync_two_way")
+        acoes_2vias = [self.app.tree_differences.item(i, "values")[0] for i in self.app.tree_differences.get_children()]
+        self.assertIn("Copiar para a Origem", acoes_2vias)
+
+        self.app.var_goodsync_mode.set("goodsync_mirror")
+        self.app._on_goodsync_mode_change()
+        self.app.update_idletasks()
+        acoes_espelho = [self.app.tree_differences.item(i, "values")[0] for i in self.app.tree_differences.get_children()]
+        self.assertIn("Excluir do Destino", acoes_espelho)
+        self.assertNotIn("Copiar para a Origem", acoes_espelho)
+
+        self.app.var_goodsync_mode.set("goodsync_two_way")
+        self.app._on_goodsync_mode_change()
+
+    def test_gui_analysis_clears_between_runs(self):
+        """Uma nova análise sem divergências limpa a tabela e libera o estado anterior."""
+        from sync_analyzer import parse_analysis_output
+
+        self._carregar_analise()
+        self.assertTrue(self.app.sync_differences)
+
+        vazia = parse_analysis_output([], r"C:\Origem", r"D:\Destino", "goodsync_two_way")
+        self.app._on_analysis_completed(vazia)
+        self.app.update_idletasks()
+
+        self.assertEqual(len(self.app.tree_differences.get_children()), 0)
+        self.assertEqual(self.app.btn_apply_plan.cget("state"), "disabled")
+        self.assertIn("idênticos", self.app.lbl_diff_summary.cget("text"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,15 +4,90 @@ Compatível com Windows 10 e Windows 11.
 Interface minimalista, tela cheia nativa, modo simplificado por padrão e opções avançadas sob demanda.
 """
 
+import csv
 import os
+import subprocess
 import sys
 import ctypes
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 
-from robocopy_engine import RobocopyEngine, RobocopyConfig, interpret_exit_code
+from robocopy_engine import (
+    OCCURRENCE_CATEGORIES,
+    RobocopyConfig,
+    RobocopyEngine,
+    analyze_extra_args,
+    classify_log_line,
+    DESTRUCTIVE_FLAGS,
+    explain_exit_code,
+    format_size,
+    interpret_exit_code,
+    parse_log_entry,
+)
 from presets import PRESETS, apply_preset_to_config, export_profile_to_json, import_profile_from_json
+from sync_analyzer import (
+    ACTION_COPY_TO_DEST,
+    ACTION_COPY_TO_SOURCE,
+    ACTION_DELETE_DEST,
+    ACTION_LABELS,
+    ACTION_SKIP,
+    SyncAnalyzer,
+    SyncPlanExecutor,
+    build_execution_plan,
+    suggest_action,
+)
+
+# Cor de cada tipo de linha do log, no formato (tema claro, tema escuro).
+LOG_TAG_COLORS = {
+    "new_file": ("#15803d", "#4ade80"),
+    "new_dir": ("#0f766e", "#5eead4"),
+    "extra_file": ("#b45309", "#facc15"),
+    "extra_dir": ("#b45309", "#facc15"),
+    "lonely": ("#b45309", "#facc15"),
+    "mismatch": ("#c2410c", "#fb923c"),
+    "newer": ("#0369a1", "#38bdf8"),
+    "older": ("#7c3aed", "#c4b5fd"),
+    "changed": ("#0369a1", "#38bdf8"),
+    "tweaked": ("#0f766e", "#5eead4"),
+    "same": ("#94a3b8", "#64748b"),
+    "deleted": ("#be123c", "#fb7185"),
+    "error": ("#dc2626", "#f87171"),
+    "warning": ("#b45309", "#facc15"),
+    "step": ("#1d4ed8", "#93c5fd"),
+    "summary": ("#334155", "#cbd5e1"),
+    "banner": ("#94a3b8", "#64748b"),
+    "progress": ("#94a3b8", "#64748b"),
+}
+
+# Filtros do painel de ocorrências.
+OCCURRENCE_FILTERS = ["Todas", "Arquivos EXTRA", "Falhas", "Incompatibilidades"]
+
+# Filtros da tabela de divergências da Central de Sincronização.
+DIFFERENCE_FILTERS = [
+    "Todas",
+    "Só na Origem",
+    "Só no Destino",
+    "Atualizações",
+    "Marcadas para excluir",
+]
+
+# Atalhos de flags avançadas oferecidos ao lado do campo de parâmetros livres.
+EXTRA_FLAG_SHORTCUTS = [
+    ("/PURGE", "Apaga do destino os arquivos que não existem mais na origem, sem espelhar o resto."),
+    ("/MIR", "Espelhamento completo: copia tudo e apaga do destino o que não está na origem."),
+    ("/FFT", "Usa tolerância de 2 segundos nos horários. Essencial para pendrives, NAS, Linux e discos FAT32."),
+    ("/Z", "Modo reiniciável: continua a transferência de onde parou se a rede cair."),
+    ("/XX", "Ignora completamente os arquivos extras do destino (nem lista, nem apaga)."),
+    ("/SL", "Copia os links simbólicos como links, em vez de copiar o conteúdo apontado."),
+    ("/NOSD", "Não exibe o diretório de origem no relatório."),
+    ("/256", "Desativa o suporte a caminhos com mais de 256 caracteres."),
+]
+
+# Limites de memória da interface para logs muito longos.
+MAX_OCCURRENCE_ROWS = 5000
+MAX_LOG_LINES = 8000
+LOG_TRIM_BLOCK = 2000
 
 # Suporte opcional a Drag & Drop
 try:
@@ -24,12 +99,19 @@ except ImportError:
 
 class ToolTip:
     """Tooltip minimalista e leve para exibir dicas rápidas ao passar o mouse."""
-    def __init__(self, widget, text: str):
+    def __init__(self, widget, text: str, wraplength: int = 0):
         self.widget = widget
         self.text = text
+        self.wraplength = wraplength
         self.tip_window = None
         self.widget.bind("<Enter>", self.show_tip)
         self.widget.bind("<Leave>", self.hide_tip)
+
+    def set_text(self, text: str):
+        """Troca o conteúdo da dica (usado para explicar o resultado da última execução)."""
+        self.text = text
+        if self.tip_window:
+            self.hide_tip()
 
     def show_tip(self, event=None):
         if self.tip_window or not self.text:
@@ -53,7 +135,8 @@ class ToolTip:
             borderwidth=1,
             font=("Segoe UI", 9),
             padx=10,
-            pady=6
+            pady=6,
+            wraplength=self.wraplength if self.wraplength else 0
         )
         label.pack()
 
@@ -87,16 +170,38 @@ class RobocopyApp(ctk.CTk):
         super().__init__()
 
         self.engine = RobocopyEngine()
+        self.analyzer = SyncAnalyzer()
+        self.plan_executor = SyncPlanExecutor()
         self.config = RobocopyConfig()
         self.advanced_visible = False
         self.sync_visible = False
+
+        # Estado do painel de ocorrências e da análise de divergências
+        self.occurrences = []
+        self.sync_differences = []
+        self.sync_analysis = None
+        self.last_summary = {}
+        self.last_exit_code = None
+        self.is_busy = False
+
+        # Flags livres do RoboCopy digitadas pelo usuário (compartilhadas entre painéis)
+        self.var_extra_args = tk.StringVar(value="")
+        self.var_two_way = tk.BooleanVar(value=False)
+        self.extra_args_warning_labels = []
 
         # Configuração da Janela
         self.title("RoboCopy Manager - Transferência e Backup de Arquivos")
         self.minsize(1020, 720)
 
         # Inicia automaticamente em tela cheia (maximizado no Windows)
-        self.state("zoomed")
+        try:
+            self.state("zoomed")
+        except Exception:
+            # Ambientes nao-Windows (ou sessoes de teste) nao suportam o estado "zoomed"
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                pass
 
         # Configuração de Tema Profissional
         ctk.set_appearance_mode("Dark")
@@ -118,9 +223,15 @@ class RobocopyApp(ctk.CTk):
         self._build_main_container()
         self._build_footer()
 
+        # Aparência das tabelas (ocorrências e divergências)
+        self._configure_tree_style()
+
         # Inicializa valores e modo simplificado padrão
         self._sync_ui_from_config(self.config)
         self.update_command_preview()
+
+        # A partir daqui qualquer mudança nas flags livres atualiza a prévia do comando
+        self.var_extra_args.trace_add("write", lambda *_args: self._on_extra_args_change())
 
         if HAS_WINDND:
             self._setup_drag_and_drop()
@@ -210,6 +321,9 @@ class RobocopyApp(ctk.CTk):
     def _change_theme(self, choice: str):
         map_theme = {"Escuro": "Dark", "Claro": "Light", "Sistema": "System"}
         ctk.set_appearance_mode(map_theme.get(choice, "Dark"))
+        # As cores do console e das tabelas não seguem o tema automaticamente
+        self._apply_log_tag_colors()
+        self._configure_tree_style()
 
     def _build_main_container(self):
         """Estrutura principal: Seção Básica, Alternador de Avançado, GoodSync e Console ao vivo."""
@@ -366,6 +480,14 @@ class RobocopyApp(ctk.CTk):
                 "Mover Arquivos (Recortar)",
                 "Transfere tudo para o destino e apaga os arquivos da pasta de origem após a cópia com êxito."
             ),
+            (
+                "goodsync_two_way",
+                "Sincronização Dupla (2 vias, em um clique)",
+                "Executa a rotina completa em duas etapas automáticas com um único clique:\n"
+                "Etapa 1 - Origem ➔ Destino (envia o que é mais novo na origem).\n"
+                "Etapa 2 - Destino ➔ Origem (traz de volta o que é mais novo no destino).\n"
+                "Nenhum arquivo é apagado: as duas pastas terminam com o conteúdo somado e atualizado."
+            ),
         ]
 
         for p_key, p_title, p_desc in presets_list:
@@ -443,6 +565,19 @@ class RobocopyApp(ctk.CTk):
             self.advanced_visible = True
             self.update_command_preview()
 
+    def _scroll_to_widget(self, widget):
+        """Rola a tela principal até deixar o trecho indicado visível."""
+        try:
+            self.main_scroll.update_idletasks()
+            canvas = self.main_scroll._parent_canvas
+            content_height = self.main_scroll.winfo_height()
+            if content_height <= 0:
+                return
+            offset = widget.winfo_rooty() - self.main_scroll.winfo_rooty()
+            canvas.yview_moveto(max(0.0, min(1.0, offset / content_height)))
+        except Exception:
+            pass
+
     def _toggle_sync_panel(self):
         """Alterna a exibição do painel dedicado GoodSync de forma exclusiva."""
         if self.sync_visible:
@@ -461,6 +596,7 @@ class RobocopyApp(ctk.CTk):
             self.btn_toggle_sync.configure(text="Ocultar Sincronização GoodSync")
             self.sync_visible = True
             self._on_goodsync_mode_change()
+            self.after(60, lambda: self._scroll_to_widget(self.sync_container))
 
     def _build_sync_panel(self):
         """Central dedicada de Sincronização de Pastas no padrão GoodSync."""
@@ -531,9 +667,11 @@ class RobocopyApp(ctk.CTk):
             ),
         ]
 
-        for m_key, m_title, m_desc in goodsync_modes:
+        modes_box.grid_columnconfigure((0, 1), weight=1)
+
+        for position, (m_key, m_title, m_desc) in enumerate(goodsync_modes):
             m_row = ctk.CTkFrame(modes_box, fg_color="transparent")
-            m_row.pack(anchor="w", pady=3)
+            m_row.grid(row=position // 2, column=position % 2, sticky="w", pady=2, padx=(0, 12))
 
             r = ctk.CTkRadioButton(
                 m_row,
@@ -593,6 +731,659 @@ class RobocopyApp(ctk.CTk):
         ctk.CTkCheckBox(r_zb, text="Modo Reinicialização Backup (/ZB)", font=ctk.CTkFont(family="Segoe UI", size=11), variable=self.var_sync_zb, command=self.update_command_preview).pack(side="left")
         self._create_info_badge(r_zb, "Se o acesso for negado por permissões de usuário, usa privilégios de Administrador de Backup para copiar à força.").pack(side="left", padx=4)
 
+        # Flags livres continuam acessíveis com a Central de Sincronização aberta
+        self._build_extra_args_section(sync_card, compact=True)
+
+        # Análise item a item das divergências entre as duas pastas
+        self._build_sync_analysis_section(sync_card)
+
+    # -------------------------------------------------------------
+    # CENTRAL GOODSYNC: ANÁLISE E RESOLUÇÃO DE DIVERGÊNCIAS
+    # -------------------------------------------------------------
+    def _build_sync_analysis_section(self, parent):
+        """Painel que lista arquivo por arquivo o que está diferente e permite agir."""
+        analysis_card = ctk.CTkFrame(
+            parent,
+            fg_color=("#ffffff", "#0b0f19"),
+            corner_radius=6,
+            border_width=1,
+            border_color=("#7dd3fc", "#1e3a5f")
+        )
+        analysis_card.pack(fill="both", expand=True, padx=16, pady=(4, 14))
+
+        # --- Cabeçalho com o passo a passo ---
+        head = ctk.CTkFrame(analysis_card, fg_color="transparent")
+        head.pack(fill="x", padx=12, pady=(10, 2))
+
+        ctk.CTkLabel(
+            head,
+            text="Analisar e Resolver Divergências",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=("#0369a1", "#38bdf8")
+        ).pack(side="left")
+
+        self._create_info_badge(
+            head,
+            "Aqui você vê exatamente QUAIS arquivos estão diferentes, EM QUAL caminho e de QUE lado,\n"
+            "e escolhe O QUE fazer com cada um antes de qualquer alteração em disco.\n\n"
+            "A análise usa o RoboCopy em modo somente-leitura (/L): nada é copiado nem apagado\n"
+            "até você clicar em 'Aplicar Ações Selecionadas'."
+        ).pack(side="left", padx=8)
+
+        ctk.CTkLabel(
+            head,
+            text="1. Analisar   ➔   2. Revisar e ajustar as ações   ➔   3. Aplicar",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(side="right")
+
+        # --- Botões principais ---
+        actions_bar = ctk.CTkFrame(analysis_card, fg_color="transparent")
+        actions_bar.pack(fill="x", padx=12, pady=(4, 2))
+
+        self.btn_analyze = ctk.CTkButton(
+            actions_bar,
+            text="Analisar Diferenças (não altera nada)",
+            height=32,
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            text_color="#ffffff",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self._analyze_differences
+        )
+        self.btn_analyze.pack(side="left")
+        ToolTip(
+            self.btn_analyze,
+            "Compara as duas pastas e lista cada arquivo divergente com o caminho completo.\n"
+            "Nenhum arquivo é copiado, movido ou apagado nesta etapa.",
+            wraplength=400
+        )
+
+        self.btn_apply_plan = ctk.CTkButton(
+            actions_bar,
+            text="Aplicar Ações Selecionadas",
+            height=32,
+            fg_color=("#dcfce7", "#14532d"),
+            hover_color=("#bbf7d0", "#166534"),
+            text_color=("#15803d", "#86efac"),
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            state="disabled",
+            command=self._apply_sync_plan
+        )
+        self.btn_apply_plan.pack(side="left", padx=8)
+        ToolTip(
+            self.btn_apply_plan,
+            "Executa exatamente as ações mostradas na coluna 'Ação' da tabela.\n"
+            "Itens marcados como 'Ignorar' não são tocados.",
+            wraplength=400
+        )
+
+        self.btn_stop_sync = ctk.CTkButton(
+            actions_bar,
+            text="Interromper",
+            height=32,
+            width=100,
+            fg_color=("#fee2e2", "#7f1d1d"),
+            hover_color=("#fecaca", "#991b1b"),
+            text_color=("#991b1b", "#fecaca"),
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            state="disabled",
+            command=self._stop_sync_operation
+        )
+        self.btn_stop_sync.pack(side="left", padx=(0, 8))
+
+        self.btn_export_diff = ctk.CTkButton(
+            actions_bar,
+            text="Exportar Lista CSV",
+            height=32,
+            width=140,
+            fg_color=("#e2e8f0", "#2b2b2b"),
+            hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._export_differences_csv
+        )
+        self.btn_export_diff.pack(side="right", padx=3)
+
+        self.btn_open_diff = ctk.CTkButton(
+            actions_bar,
+            text="Abrir no Explorer",
+            height=32,
+            width=140,
+            fg_color=("#e2e8f0", "#2b2b2b"),
+            hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._open_selected_difference
+        )
+        self.btn_open_diff.pack(side="right", padx=3)
+
+        # --- Resumo e filtros ---
+        self.lbl_diff_summary = ctk.CTkLabel(
+            analysis_card,
+            text="Clique em 'Analisar Diferenças' para comparar as duas pastas item a item.",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=("#334155", "#cbd5e1"),
+            justify="left",
+            anchor="w"
+        )
+        self.lbl_diff_summary.pack(fill="x", padx=12, pady=(6, 2))
+
+        filter_bar = ctk.CTkFrame(analysis_card, fg_color="transparent")
+        filter_bar.pack(fill="x", padx=12, pady=(0, 4))
+
+        ctk.CTkLabel(
+            filter_bar,
+            text="Mostrar:",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(side="left", padx=(0, 6))
+
+        self.difference_filter = ctk.CTkSegmentedButton(
+            filter_bar,
+            values=DIFFERENCE_FILTERS,
+            command=self._on_difference_filter_change,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            height=26
+        )
+        self.difference_filter.set(DIFFERENCE_FILTERS[0])
+        self.difference_filter.pack(side="left")
+
+        self.lbl_plan_preview = ctk.CTkLabel(
+            filter_bar,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=("#0369a1", "#38bdf8")
+        )
+        self.lbl_plan_preview.pack(side="right")
+
+        # --- Tabela de divergências ---
+        table_box = ctk.CTkFrame(analysis_card, fg_color="transparent")
+        table_box.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+
+        self.tree_differences = ttk.Treeview(
+            table_box,
+            columns=("acao", "situacao", "lado", "tamanho", "caminho"),
+            show="headings",
+            style="RCM.Treeview",
+            height=10,
+            selectmode="extended"
+        )
+        self.tree_differences.heading("acao", text="Ação a executar")
+        self.tree_differences.heading("situacao", text="Situação encontrada")
+        self.tree_differences.heading("lado", text="Existe em")
+        self.tree_differences.heading("tamanho", text="Tamanho")
+        self.tree_differences.heading("caminho", text="Caminho (relativo às pastas comparadas)")
+        self.tree_differences.column("acao", width=200, minwidth=150, stretch=False)
+        self.tree_differences.column("situacao", width=190, minwidth=150, stretch=False)
+        self.tree_differences.column("lado", width=90, minwidth=70, stretch=False)
+        self.tree_differences.column("tamanho", width=90, minwidth=70, anchor="e", stretch=False)
+        self.tree_differences.column("caminho", width=520, minwidth=240, stretch=True)
+
+        diff_scroll = ttk.Scrollbar(table_box, orient="vertical", command=self.tree_differences.yview)
+        self.tree_differences.configure(yscrollcommand=diff_scroll.set)
+        diff_scroll.pack(side="right", fill="y")
+        self.tree_differences.pack(side="left", fill="both", expand=True)
+
+        self.tree_differences.bind("<<TreeviewSelect>>", self._on_difference_select)
+        self.tree_differences.bind("<Double-1>", self._cycle_difference_action)
+
+        # --- Ações em lote sobre a seleção ---
+        bulk = ctk.CTkFrame(analysis_card, fg_color="transparent")
+        bulk.pack(fill="x", padx=12, pady=(4, 2))
+
+        ctk.CTkLabel(
+            bulk,
+            text="Para os itens selecionados:",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=("#334155", "#cbd5e1")
+        ).pack(side="left", padx=(0, 8))
+
+        bulk_buttons = [
+            (ACTION_COPY_TO_DEST, "Copiar para o Destino", ("#dbeafe", "#1e3a5f"), ("#1d4ed8", "#93c5fd")),
+            (ACTION_COPY_TO_SOURCE, "Copiar para a Origem", ("#dbeafe", "#1e3a5f"), ("#1d4ed8", "#93c5fd")),
+            (ACTION_DELETE_DEST, "Excluir do Destino", ("#fee2e2", "#7f1d1d"), ("#991b1b", "#fecaca")),
+            (ACTION_SKIP, "Ignorar", ("#e2e8f0", "#1e293b"), ("#334155", "#cbd5e1")),
+        ]
+        for action, caption, fg, text_color in bulk_buttons:
+            ctk.CTkButton(
+                bulk,
+                text=caption,
+                height=26,
+                fg_color=fg,
+                hover_color=fg,
+                text_color=text_color,
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                command=lambda a=action: self._set_action_for_selected(a)
+            ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            bulk,
+            text="Restaurar sugestão do modo",
+            height=26,
+            width=190,
+            fg_color=("#e2e8f0", "#2b2b2b"),
+            hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._restore_suggested_actions
+        ).pack(side="right", padx=3)
+
+        ctk.CTkButton(
+            bulk,
+            text="Selecionar tudo",
+            height=26,
+            width=120,
+            fg_color=("#e2e8f0", "#2b2b2b"),
+            hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._select_all_differences
+        ).pack(side="right", padx=3)
+
+        self.lbl_diff_detail = ctk.CTkLabel(
+            analysis_card,
+            text="Dica: selecione uma linha para ver a explicação e os caminhos completos dos dois lados. "
+                 "Dois cliques alternam a ação daquele item.",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=("#64748b", "#94a3b8"),
+            justify="left",
+            anchor="w",
+            wraplength=1000
+        )
+        self.lbl_diff_detail.pack(fill="x", padx=12, pady=(2, 10))
+
+    def _analyze_differences(self):
+        """Compara origem e destino em modo somente-leitura e preenche a tabela."""
+        if self.is_busy:
+            messagebox.showinfo("Aguarde", "Já existe uma operação em andamento.")
+            return
+
+        cfg = self._gather_config_from_ui()
+        if not cfg.source or not cfg.destination:
+            messagebox.showwarning(
+                "Caminhos Incompletos",
+                "Informe a pasta de Origem e a pasta de Destino antes de analisar as diferenças."
+            )
+            return
+
+        if not os.path.exists(cfg.source):
+            messagebox.showerror("Origem Inexistente", f"A pasta de origem não foi encontrada:\n{cfg.source}")
+            return
+
+        if not os.path.exists(cfg.destination):
+            messagebox.showwarning(
+                "Destino Inexistente",
+                f"A pasta de destino ainda não existe:\n{cfg.destination}\n\n"
+                "Todos os itens da origem serão listados como novos."
+            )
+
+        mode = self.var_goodsync_mode.get() if hasattr(self, "var_goodsync_mode") else "goodsync_two_way"
+
+        self._set_sync_busy(True)
+        self._clear_differences()
+        self.lbl_diff_summary.configure(
+            text="Analisando as duas pastas... (somente leitura, nada está sendo alterado)",
+            text_color=("#d97706", "#facc15")
+        )
+        self.lbl_status.configure(text="Status: Analisando diferenças...", text_color=("#d97706", "#facc15"))
+        self._append_log_line("\n>>> [ANÁLISE] Comparando origem e destino em modo somente-leitura...\n\n")
+
+        self.analyzer.analyze_async(
+            config=cfg,
+            mode=mode,
+            on_line=self._handle_output_line,
+            on_finish=lambda analysis: self.after(0, self._on_analysis_completed, analysis),
+        )
+
+    def _on_analysis_completed(self, analysis):
+        """Recebe o resultado da análise e monta a tabela de divergências."""
+        self._set_sync_busy(False)
+        self.sync_analysis = analysis
+        self.sync_differences = list(analysis.differences)
+
+        self._populate_difference_tree()
+
+        if analysis.cancelled:
+            self.lbl_diff_summary.configure(
+                text="Análise interrompida pelo usuário.",
+                text_color=("#d97706", "#facc15")
+            )
+            self.lbl_status.configure(text="Status: Análise interrompida", text_color=("#d97706", "#facc15"))
+            return
+
+        if analysis.exit_code >= 16 and not analysis.differences:
+            self.lbl_diff_summary.configure(
+                text="Não foi possível concluir a análise. Verifique os caminhos e as permissões de acesso.",
+                text_color=("#dc2626", "#f87171")
+            )
+            self.lbl_status.configure(text="Status: Falha na análise", text_color=("#dc2626", "#f87171"))
+            return
+
+        summary = analysis.summary_text()
+        if analysis.differences:
+            color = ("#b45309", "#facc15")
+            status_text = f"Status: {len(analysis.differences)} divergência(s) encontrada(s) - escolha a ação de cada item"
+            status_color = ("#d97706", "#facc15")
+        else:
+            color = ("#15803d", "#4ade80")
+            status_text = "Status: Origem e destino já estão sincronizados"
+            status_color = ("#16a34a", "#4ade80")
+
+        self.lbl_diff_summary.configure(text=summary, text_color=color)
+        self.lbl_status.configure(text=status_text, text_color=status_color)
+        self.btn_apply_plan.configure(state="normal" if analysis.differences else "disabled")
+
+        if analysis.differences:
+            self.after(60, lambda: self._scroll_to_widget(self.lbl_diff_summary))
+
+    def _clear_differences(self):
+        self.sync_differences = []
+        self.sync_analysis = None
+        for item in self.tree_differences.get_children():
+            self.tree_differences.delete(item)
+        self.btn_apply_plan.configure(state="disabled")
+        self.lbl_plan_preview.configure(text="")
+
+    def _difference_matches_filter(self, diff) -> bool:
+        selected = self.difference_filter.get() if hasattr(self, "difference_filter") else DIFFERENCE_FILTERS[0]
+        if selected == DIFFERENCE_FILTERS[1]:
+            return diff.category in ("new_file", "new_dir")
+        if selected == DIFFERENCE_FILTERS[2]:
+            return diff.category in ("extra_file", "extra_dir", "lonely")
+        if selected == DIFFERENCE_FILTERS[3]:
+            return diff.category in ("newer", "older", "changed", "mismatch")
+        if selected == DIFFERENCE_FILTERS[4]:
+            return diff.action == ACTION_DELETE_DEST
+        return True
+
+    def _populate_difference_tree(self):
+        """Redesenha a tabela de divergências respeitando o filtro atual."""
+        for item in self.tree_differences.get_children():
+            self.tree_differences.delete(item)
+
+        for index, diff in enumerate(self.sync_differences):
+            if not self._difference_matches_filter(diff):
+                continue
+            self.tree_differences.insert(
+                "", "end", iid=str(index),
+                values=(
+                    diff.action_label,
+                    diff.label,
+                    diff.side_label,
+                    diff.size_text,
+                    diff.relative_path + ("\\" if diff.is_dir else ""),
+                ),
+                tags=(f"cat_{diff.category}",),
+            )
+
+        self._update_plan_preview()
+
+    def _update_plan_preview(self):
+        """Mostra quantas cópias e exclusões o plano atual vai executar."""
+        to_dest = sum(1 for d in self.sync_differences if d.action == ACTION_COPY_TO_DEST)
+        to_source = sum(1 for d in self.sync_differences if d.action == ACTION_COPY_TO_SOURCE)
+        to_delete = sum(1 for d in self.sync_differences if d.action == ACTION_DELETE_DEST)
+        ignored = sum(1 for d in self.sync_differences if d.action == ACTION_SKIP)
+
+        if not self.sync_differences:
+            self.lbl_plan_preview.configure(text="")
+            return
+
+        self.lbl_plan_preview.configure(
+            text=(
+                f"Plano atual: {to_dest} ➔ destino | {to_source} ➔ origem | "
+                f"{to_delete} exclusão(ões) | {ignored} ignorado(s)"
+            )
+        )
+
+    def _on_difference_filter_change(self, _value=None):
+        self._populate_difference_tree()
+
+    def _selected_differences(self):
+        selected = []
+        for item_id in self.tree_differences.selection():
+            try:
+                selected.append((int(item_id), self.sync_differences[int(item_id)]))
+            except (ValueError, IndexError):
+                continue
+        return selected
+
+    def _on_difference_select(self, _event=None):
+        """Mostra a explicação e os caminhos completos do item selecionado."""
+        selected = self._selected_differences()
+        if not selected:
+            return
+
+        _index, diff = selected[0]
+        available = " | ".join(ACTION_LABELS[a] for a in diff.available_actions())
+        self.lbl_diff_detail.configure(
+            text=(
+                f"{diff.label}: {diff.explanation}\n"
+                f"{diff.location_text()}\n"
+                f"Ações possíveis para este item: {available}"
+            )
+        )
+
+    def _set_action_for_selected(self, action: str):
+        """Aplica a ação escolhida a todos os itens selecionados na tabela."""
+        selected = self._selected_differences()
+        if not selected:
+            messagebox.showinfo(
+                "Nenhum item selecionado",
+                "Selecione na tabela as linhas que deseja alterar.\n"
+                "Use Ctrl+clique ou Shift+clique para escolher vários de uma vez."
+            )
+            return
+
+        rejected = 0
+        for index, diff in selected:
+            if action not in diff.available_actions():
+                rejected += 1
+                continue
+            diff.action = action
+            if self.tree_differences.exists(str(index)):
+                values = list(self.tree_differences.item(str(index), "values"))
+                values[0] = diff.action_label
+                self.tree_differences.item(str(index), values=values)
+
+        if self.difference_filter.get() == DIFFERENCE_FILTERS[4]:
+            self._populate_difference_tree()
+        else:
+            self._update_plan_preview()
+
+        if rejected:
+            messagebox.showinfo(
+                "Ação não aplicável",
+                f"{rejected} item(ns) não aceitam a ação '{ACTION_LABELS.get(action, action)}' "
+                "e permaneceram como estavam.\n\n"
+                "Exemplo: um arquivo que só existe na origem não pode ser excluído do destino, "
+                "e itens incompatíveis precisam ser resolvidos manualmente."
+            )
+
+    def _cycle_difference_action(self, _event=None):
+        """Dois cliques em uma linha alternam entre as ações possíveis daquele item."""
+        selected = self._selected_differences()
+        if not selected:
+            return
+        _index, diff = selected[0]
+        options = diff.available_actions()
+        try:
+            position = options.index(diff.action)
+        except ValueError:
+            position = -1
+        self._set_action_for_selected(options[(position + 1) % len(options)])
+
+    def _select_all_differences(self):
+        children = self.tree_differences.get_children()
+        if children:
+            self.tree_differences.selection_set(children)
+
+    def _restore_suggested_actions(self):
+        """Volta todas as ações para a sugestão automática do modo selecionado."""
+        mode = self.var_goodsync_mode.get() if hasattr(self, "var_goodsync_mode") else "goodsync_two_way"
+        for diff in self.sync_differences:
+            diff.action = suggest_action(diff.category, mode)
+        self._populate_difference_tree()
+
+    def _apply_sync_plan(self):
+        """Executa exatamente as ações escolhidas na tabela."""
+        if self.is_busy:
+            messagebox.showinfo("Aguarde", "Já existe uma operação em andamento.")
+            return
+
+        if not self.sync_differences:
+            messagebox.showinfo("Nada a fazer", "Analise as diferenças antes de aplicar as ações.")
+            return
+
+        cfg = self._gather_config_from_ui()
+        plan = build_execution_plan(self.sync_differences)
+
+        if not plan:
+            messagebox.showinfo(
+                "Nada a fazer",
+                "Todos os itens estão marcados como 'Ignorar'.\n"
+                "Escolha pelo menos uma ação de cópia ou exclusão."
+            )
+            return
+
+        to_dest = sum(1 for d in self.sync_differences if d.action == ACTION_COPY_TO_DEST)
+        to_source = sum(1 for d in self.sync_differences if d.action == ACTION_COPY_TO_SOURCE)
+        deletions = [d for d in self.sync_differences if d.action == ACTION_DELETE_DEST]
+
+        message = [
+            "As seguintes ações serão executadas agora:",
+            "",
+            f"  Copiar para o destino: {to_dest} item(ns)",
+            f"  Copiar para a origem:  {to_source} item(ns)",
+            f"  Excluir do destino:    {len(deletions)} item(ns)",
+        ]
+
+        if deletions:
+            preview = "\n".join(f"    - {d.relative_path}" for d in deletions[:8])
+            if len(deletions) > 8:
+                preview += f"\n    ... e mais {len(deletions) - 8} item(ns)."
+            message += [
+                "",
+                "ATENÇÃO: as exclusões abaixo são permanentes e não passam pela Lixeira:",
+                preview,
+            ]
+
+        message += ["", "Deseja prosseguir?"]
+
+        if not messagebox.askyesno("Confirmar Aplicação das Ações", "\n".join(message)):
+            return
+
+        self._set_sync_busy(True)
+        self.lbl_status.configure(text="Status: Aplicando ações escolhidas...", text_color=("#d97706", "#facc15"))
+        self._append_log_line(f"\n>>> [APLICANDO PLANO] {len(plan)} operação(ões) a executar...\n")
+
+        self.plan_executor.execute_async(
+            plan=plan,
+            config=cfg,
+            on_line=self._handle_output_line,
+            on_finish=lambda result: self.after(0, self._on_plan_completed, result),
+        )
+
+    def _on_plan_completed(self, result: dict):
+        """Atualiza a interface após a execução do plano de ações."""
+        self._set_sync_busy(False)
+
+        exit_code = result.get("exit_code", 0)
+        title, desc, _category = interpret_exit_code(exit_code)
+        steps = [{"label": s["label"], "code": s["code"], "title": interpret_exit_code(s["code"])[0]}
+                 for s in result.get("steps", [])]
+
+        summary = {
+            "steps": steps,
+            "explanation": explain_exit_code(exit_code, steps),
+        }
+        self._update_status_result(exit_code, title, desc, summary)
+
+        self.lbl_diff_summary.configure(
+            text=(
+                f"Ações aplicadas: {result.get('copied', 0)} cópia(s), "
+                f"{result.get('deleted', 0)} exclusão(ões), {result.get('failed', 0)} falha(s). "
+                "Analise novamente para confirmar que as pastas ficaram sincronizadas."
+            ),
+            text_color=("#15803d", "#4ade80") if exit_code < 8 else ("#dc2626", "#f87171")
+        )
+
+        if exit_code < 8 and not result.get("cancelled"):
+            if messagebox.askyesno(
+                "Ações Concluídas",
+                f"{result.get('copied', 0)} cópia(s) e {result.get('deleted', 0)} exclusão(ões) aplicadas.\n\n"
+                "Deseja analisar novamente para confirmar que não sobrou nenhuma divergência?"
+            ):
+                self._analyze_differences()
+        elif exit_code >= 8:
+            messagebox.showerror(
+                "Algumas Ações Falharam",
+                f"{result.get('failed', 0)} operação(ões) não puderam ser concluídas.\n\n"
+                "Consulte o painel de Ocorrências para ver o motivo de cada falha."
+            )
+
+    def _set_sync_busy(self, busy: bool):
+        """Bloqueia ou libera os controles durante a análise e a aplicação do plano."""
+        self.is_busy = busy
+        state = "disabled" if busy else "normal"
+        self.btn_analyze.configure(state=state)
+        self.btn_run.configure(state=state)
+        self.btn_simulate.configure(state=state)
+        self.btn_stop_sync.configure(state="normal" if busy else "disabled")
+        # O botão "Interromper" do rodapé também cancela a análise e o plano
+        self.btn_cancel.configure(state="normal" if busy else "disabled")
+        if busy:
+            self.btn_apply_plan.configure(state="disabled")
+        elif self.sync_differences:
+            self.btn_apply_plan.configure(state="normal")
+
+    def _stop_sync_operation(self):
+        """Interrompe a análise ou a aplicação do plano em andamento."""
+        stopped = self.analyzer.stop() or self.plan_executor.stop()
+        if stopped:
+            self._append_log_line("\n[OPERAÇÃO CANCELADA PELO USUÁRIO]\n")
+
+    def _open_selected_difference(self):
+        """Abre no Explorer a pasta do item divergente selecionado."""
+        selected = self._selected_differences()
+        if not selected:
+            messagebox.showinfo("Abrir no Explorer", "Selecione na tabela o item que deseja localizar.")
+            return
+        _index, diff = selected[0]
+        self._reveal_in_explorer(diff.path_on_side)
+
+    def _export_differences_csv(self):
+        """Exporta a lista de divergências e as ações escolhidas para um arquivo CSV."""
+        if not self.sync_differences:
+            messagebox.showinfo("Exportar Lista", "Analise as diferenças antes de exportar a lista.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Exportar Lista de Divergências",
+            defaultextension=".csv",
+            filetypes=[("Planilha CSV", "*.csv"), ("Todos os Arquivos", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle, delimiter=";")
+                writer.writerow([
+                    "Acao", "Situacao", "Existe em", "Tamanho (bytes)",
+                    "Caminho relativo", "Caminho na origem", "Caminho no destino", "Explicacao",
+                ])
+                for diff in self.sync_differences:
+                    writer.writerow([
+                        diff.action_label, diff.label, diff.side_label,
+                        diff.size if diff.size is not None else "",
+                        diff.relative_path, diff.source_path, diff.dest_path, diff.explanation,
+                    ])
+            messagebox.showinfo("Exportado", f"Lista de divergências salva em:\n{filepath}")
+        except Exception as ex:
+            messagebox.showerror("Erro ao Exportar", f"Não foi possível salvar o arquivo:\n{ex}")
+
     def _on_goodsync_mode_change(self):
         mode = self.var_goodsync_mode.get()
         if mode == "goodsync_mirror":
@@ -605,6 +1396,13 @@ class RobocopyApp(ctk.CTk):
             self.lbl_sync_direction.configure(text="Direção: Origem -> Destino [Mover e Apagar Origem]")
         elif mode == "goodsync_filter":
             self.lbl_sync_direction.configure(text="Direção: Origem -> Destino (Com Filtros Ativos)")
+
+        # As ações sugeridas dependem do modo: atualiza a tabela já analisada
+        if getattr(self, "sync_differences", None):
+            for diff in self.sync_differences:
+                diff.action = suggest_action(diff.category, mode)
+            self._populate_difference_tree()
+
         self.update_command_preview()
 
     def _build_advanced_tabs(self):
@@ -700,6 +1498,23 @@ class RobocopyApp(ctk.CTk):
         self.chk_move = ctk.CTkCheckBox(r_move, text="Recortar arquivos e remover pastas de origem (/MOVE)", font=ctk.CTkFont(family="Segoe UI", size=12), variable=self.var_move_all, command=self._on_chk_move_change)
         self.chk_move.pack(side="left")
         self._create_info_badge(r_move, "Remove tanto os arquivos quanto as pastas da origem após a conclusão.").pack(side="left", padx=6)
+
+        r_2way = ctk.CTkFrame(f2, fg_color="transparent")
+        r_2way.pack(anchor="w", padx=12, pady=(10, 10))
+        self.chk_two_way = ctk.CTkCheckBox(
+            r_2way,
+            text="Sincronização Dupla: executar as duas direções em sequência",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            variable=self.var_two_way,
+            command=self._on_two_way_change
+        )
+        self.chk_two_way.pack(side="left")
+        self._create_info_badge(
+            r_2way,
+            "Com um único clique o sistema roda duas etapas seguidas:\n"
+            "1) Origem ➔ Destino e 2) Destino ➔ Origem, ambas com /XO (só o que é mais novo).\n"
+            "O status final considera as duas etapas juntas, e não cada uma isolada."
+        ).pack(side="left", padx=6)
 
     def _build_advanced_filters_tab(self, parent):
         parent.grid_columnconfigure((0, 1), weight=1)
@@ -892,8 +1707,98 @@ class RobocopyApp(ctk.CTk):
         )
         btn_copy.pack(side="right")
 
+        self._build_extra_args_section(parent)
+
+    def _build_extra_args_section(self, parent, compact: bool = False):
+        """Campo livre para parâmetros avançados do RoboCopy que não têm caixa própria."""
+        frame = ctk.CTkFrame(
+            parent,
+            fg_color=("#f8fafc", "#141a24"),
+            corner_radius=4,
+            border_width=1,
+            border_color=("#e2e8f0", "#1e293b")
+        )
+        frame.pack(fill="x", padx=12, pady=(10, 8))
+
+        title_row = ctk.CTkFrame(frame, fg_color="transparent")
+        title_row.pack(fill="x", padx=10, pady=(8, 2))
+
+        ctk.CTkLabel(
+            title_row,
+            text="Flags Personalizadas (parâmetros livres do RoboCopy):",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+        ).pack(side="left")
+
+        self._create_info_badge(
+            title_row,
+            "Digite aqui qualquer argumento do RoboCopy que não tenha uma caixa própria na tela.\n"
+            "Eles são acrescentados ao final do comando, exatamente como você escrever.\n"
+            "Exemplos: /PURGE  /MIR  /FFT  /Z  /XX  /SL  /NOSD  /256  /IPG:20\n"
+            "Separe vários parâmetros por espaço. Use aspas em caminhos com espaço."
+        ).pack(side="left", padx=6)
+
+        entry = ctk.CTkEntry(
+            frame,
+            textvariable=self.var_extra_args,
+            placeholder_text="Ex: /FFT /Z /XX  (deixe em branco para não usar nenhum parâmetro extra)",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            height=30
+        )
+        entry.pack(fill="x", padx=10, pady=(2, 6))
+        if not compact:
+            self.entry_extra_args = entry
+
+        chips = ctk.CTkFrame(frame, fg_color="transparent")
+        if not compact:
+            chips.pack(fill="x", padx=10, pady=(0, 4))
+
+        ctk.CTkLabel(
+            chips,
+            text="Atalhos:",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(side="left", padx=(0, 6))
+
+        for flag, tip in EXTRA_FLAG_SHORTCUTS:
+            chip = ctk.CTkButton(
+                chips,
+                text=flag,
+                width=58,
+                height=24,
+                fg_color=("#e2e8f0", "#1e293b"),
+                hover_color=("#cbd5e1", "#334155"),
+                text_color=("#0f172a", "#e2e8f0"),
+                font=ctk.CTkFont(family="Consolas", size=11),
+                command=lambda f=flag: self._toggle_extra_flag(f)
+            )
+            chip.pack(side="left", padx=2)
+            ToolTip(chip, tip, wraplength=380)
+
+        ctk.CTkButton(
+            chips,
+            text="Limpar",
+            width=60,
+            height=24,
+            fg_color=("#fee2e2", "#7f1d1d"),
+            hover_color=("#fecaca", "#991b1b"),
+            text_color=("#991b1b", "#fecaca"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=lambda: self.var_extra_args.set("")
+        ).pack(side="left", padx=(10, 2))
+
+        warning = ctk.CTkLabel(
+            frame,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=("#b45309", "#facc15"),
+            justify="left",
+            anchor="w"
+        )
+        warning.pack(fill="x", padx=10, pady=(0, 8))
+        self.extra_args_warning_labels.append(warning)
+
     def _build_live_monitor_card(self):
-        """Card do Console de Saída ao Vivo e Resultados Técnicos."""
+        """Card com métricas, Console ao Vivo colorido e Painel de Ocorrências."""
         self.monitor_card = ctk.CTkFrame(self.main_scroll, corner_radius=6, border_width=1, border_color=("#e2e8f0", "#333333"), fg_color=("#ffffff", "#181818"))
         self.monitor_card.pack(fill="both", expand=True, pady=(4, 0))
 
@@ -913,15 +1818,27 @@ class RobocopyApp(ctk.CTk):
 
         ctk.CTkLabel(
             console_tools,
-            text="Registro de Execução ao Vivo (Console):",
+            text="Registro de Execução ao Vivo:",
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=("#334155", "#94a3b8")
         ).pack(side="left")
 
         self._create_info_badge(
             console_tools,
-            "Exibe os arquivos sendo copiados em tempo real diretamente do motor RoboCopy."
+            "A aba 'Console ao Vivo' mostra tudo o que o RoboCopy está fazendo, com cores por tipo de evento.\n"
+            "A aba 'Ocorrências' isola automaticamente apenas o que exige a sua atenção."
         ).pack(side="left", padx=6)
+
+        self.lbl_occurrence_badge = ctk.CTkLabel(
+            console_tools,
+            text="Ocorrências: 0",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color=("#e2e8f0", "#1e293b"),
+            text_color=("#334155", "#94a3b8"),
+            corner_radius=4,
+            padx=10, pady=2
+        )
+        self.lbl_occurrence_badge.pack(side="left", padx=8)
 
         btn_clear = ctk.CTkButton(
             console_tools, text="Limpar", width=65, height=24,
@@ -944,9 +1861,44 @@ class RobocopyApp(ctk.CTk):
         )
         btn_save.pack(side="right", padx=3)
 
-        # Terminal
+        # Abas: console completo e lista filtrada de ocorrências
+        self.monitor_tabs = ctk.CTkTabview(self.monitor_card, corner_radius=6, height=340)
+        self.monitor_tabs.pack(fill="both", expand=True, padx=10, pady=(2, 10))
+
+        tab_console = self.monitor_tabs.add("Console ao Vivo")
+        tab_occurrences = self.monitor_tabs.add("Ocorrências")
+
+        self._build_console_tab(tab_console)
+        self._build_occurrences_tab(tab_occurrences)
+
+    def _build_console_tab(self, parent):
+        """Terminal com destaque de sintaxe por tipo de linha."""
+        legend = ctk.CTkFrame(parent, fg_color="transparent")
+        legend.pack(fill="x", padx=4, pady=(2, 2))
+
+        ctk.CTkLabel(
+            legend,
+            text="Legenda:",
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(side="left", padx=(2, 6))
+
+        for category, caption in (
+            ("new_file", "Novo arquivo"),
+            ("newer", "Atualizado"),
+            ("extra_file", "Arquivo EXTRA"),
+            ("mismatch", "Incompatibilidade"),
+            ("error", "Falha / Acesso negado"),
+        ):
+            ctk.CTkLabel(
+                legend,
+                text=caption,
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                text_color=LOG_TAG_COLORS[category]
+            ).pack(side="left", padx=6)
+
         self.log_textbox = ctk.CTkTextbox(
-            self.monitor_card,
+            parent,
             wrap="none",
             font=ctk.CTkFont(family="Consolas", size=11),
             fg_color=("#f8fafc", "#0b0f19"),
@@ -954,9 +1906,104 @@ class RobocopyApp(ctk.CTk):
             corner_radius=4,
             border_width=1,
             border_color=("#e2e8f0", "#1e293b"),
-            height=260
+            height=250
         )
-        self.log_textbox.pack(fill="both", expand=True, padx=10, pady=(2, 10))
+        self.log_textbox.pack(fill="both", expand=True, padx=4, pady=(2, 6))
+        self._apply_log_tag_colors()
+
+    def _apply_log_tag_colors(self):
+        """(Re)aplica as cores do destaque de sintaxe conforme o tema atual."""
+        if not hasattr(self, "log_textbox"):
+            return
+
+        index = 0 if ctk.get_appearance_mode() == "Light" else 1
+        for category, colors in LOG_TAG_COLORS.items():
+            try:
+                self.log_textbox.tag_config(f"cat_{category}", foreground=colors[index])
+            except Exception:
+                pass
+
+    def _build_occurrences_tab(self, parent):
+        """Tabela que isola apenas arquivos EXTRA, falhas e incompatibilidades."""
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.pack(fill="x", padx=4, pady=(4, 2))
+
+        ctk.CTkLabel(
+            header,
+            text="Somente o que exige atenção:",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=("#334155", "#94a3b8")
+        ).pack(side="left")
+
+        self._create_info_badge(
+            header,
+            "Esta lista é preenchida automaticamente enquanto o RoboCopy roda.\n"
+            "Ela recolhe do log apenas as linhas de Arquivo EXTRA, Pasta EXTRA,\n"
+            "Incompatibilidade e Falha/Acesso negado, com o caminho completo de cada item."
+        ).pack(side="left", padx=6)
+
+        self.occurrence_filter = ctk.CTkSegmentedButton(
+            header,
+            values=OCCURRENCE_FILTERS,
+            command=self._on_occurrence_filter_change,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            height=26
+        )
+        self.occurrence_filter.set(OCCURRENCE_FILTERS[0])
+        self.occurrence_filter.pack(side="left", padx=12)
+
+        btn_open = ctk.CTkButton(
+            header, text="Abrir Pasta", width=90, height=26,
+            fg_color=("#e2e8f0", "#2b2b2b"), hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._open_selected_occurrence
+        )
+        btn_open.pack(side="right", padx=3)
+        ToolTip(btn_open, "Abre no Explorer a pasta do item selecionado na lista.")
+
+        btn_export = ctk.CTkButton(
+            header, text="Exportar CSV", width=100, height=26,
+            fg_color=("#e2e8f0", "#2b2b2b"), hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._export_occurrences_csv
+        )
+        btn_export.pack(side="right", padx=3)
+
+        self.lbl_occurrence_counts = ctk.CTkLabel(
+            parent,
+            text="Nenhuma ocorrência registrada até agora.",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=("#64748b", "#94a3b8")
+        )
+        self.lbl_occurrence_counts.pack(anchor="w", padx=8, pady=(0, 4))
+
+        table_box = ctk.CTkFrame(parent, fg_color="transparent")
+        table_box.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+
+        self.tree_occurrences = ttk.Treeview(
+            table_box,
+            columns=("tipo", "tamanho", "caminho"),
+            show="headings",
+            style="RCM.Treeview",
+            height=9,
+            selectmode="extended"
+        )
+        self.tree_occurrences.heading("tipo", text="Tipo de Ocorrência")
+        self.tree_occurrences.heading("tamanho", text="Tamanho")
+        self.tree_occurrences.heading("caminho", text="Caminho completo do item")
+        self.tree_occurrences.column("tipo", width=180, minwidth=140, stretch=False)
+        self.tree_occurrences.column("tamanho", width=90, minwidth=70, anchor="e", stretch=False)
+        self.tree_occurrences.column("caminho", width=620, minwidth=260, stretch=True)
+
+        scroll_y = ttk.Scrollbar(table_box, orient="vertical", command=self.tree_occurrences.yview)
+        self.tree_occurrences.configure(yscrollcommand=scroll_y.set)
+        scroll_y.pack(side="right", fill="y")
+        self.tree_occurrences.pack(side="left", fill="both", expand=True)
+        self.tree_occurrences.bind("<Double-1>", lambda e: self._open_selected_occurrence())
+
+        self._apply_tree_tag_colors(self.tree_occurrences)
 
     def _create_stat_card(self, parent, col: int, title: str, initial_text: str):
         card = ctk.CTkFrame(parent, fg_color=("#ffffff", "#202020"), corner_radius=4, border_width=1, border_color=("#e2e8f0", "#2a2a2a"))
@@ -965,6 +2012,204 @@ class RobocopyApp(ctk.CTk):
         lbl_val = ctk.CTkLabel(card, text=initial_text, font=ctk.CTkFont(family="Segoe UI", size=11), text_color=("#0f172a", "#94a3b8"), justify="left")
         lbl_val.pack(anchor="w", padx=8, pady=(1, 4))
         return lbl_val
+
+    # -------------------------------------------------------------
+    # TABELAS (ttk) - ESTILO COMPATÍVEL COM TEMA CLARO E ESCURO
+    # -------------------------------------------------------------
+    def _configure_tree_style(self):
+        """Ajusta a aparência das tabelas ttk para acompanhar o tema do aplicativo."""
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        is_light = ctk.get_appearance_mode() == "Light"
+        background = "#ffffff" if is_light else "#0b0f19"
+        foreground = "#0f172a" if is_light else "#cbd5e1"
+        heading_bg = "#e2e8f0" if is_light else "#1e293b"
+        heading_fg = "#0f172a" if is_light else "#e2e8f0"
+
+        style.configure(
+            "RCM.Treeview",
+            background=background,
+            fieldbackground=background,
+            foreground=foreground,
+            rowheight=24,
+            borderwidth=1,
+            font=("Segoe UI", 10),
+        )
+        style.map(
+            "RCM.Treeview",
+            background=[("selected", "#0f6cbd")],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "RCM.Treeview.Heading",
+            background=heading_bg,
+            foreground=heading_fg,
+            relief="flat",
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.map("RCM.Treeview.Heading", background=[("active", heading_bg)])
+
+        for tree in (getattr(self, "tree_occurrences", None), getattr(self, "tree_differences", None)):
+            if tree is not None:
+                self._apply_tree_tag_colors(tree)
+
+    def _apply_tree_tag_colors(self, tree):
+        """Aplica a cor de cada categoria nas linhas da tabela."""
+        index = 0 if ctk.get_appearance_mode() == "Light" else 1
+        for category, colors in LOG_TAG_COLORS.items():
+            try:
+                tree.tag_configure(f"cat_{category}", foreground=colors[index])
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------
+    # PAINEL DE OCORRÊNCIAS
+    # -------------------------------------------------------------
+    def _register_occurrence(self, entry):
+        """Adiciona uma ocorrência detectada no log à tabela dedicada."""
+        # Mensagens de detalhe de um erro ("Acesso negado.") complementam o erro anterior.
+        if entry.category == "error" and not entry.path and self.occurrences:
+            previous = self.occurrences[-1]
+            if previous.category == "error":
+                previous.message = f"{previous.message} {entry.message}".strip()
+                self._refresh_occurrence_row(len(self.occurrences) - 1)
+                return
+
+        if len(self.occurrences) >= MAX_OCCURRENCE_ROWS:
+            return
+
+        self.occurrences.append(entry)
+        self._insert_occurrence_row(len(self.occurrences) - 1)
+        self._update_occurrence_counters()
+
+    def _occurrence_matches_filter(self, entry) -> bool:
+        selected = self.occurrence_filter.get() if hasattr(self, "occurrence_filter") else OCCURRENCE_FILTERS[0]
+        if selected == OCCURRENCE_FILTERS[1]:
+            return entry.category in ("extra_file", "extra_dir", "lonely")
+        if selected == OCCURRENCE_FILTERS[2]:
+            return entry.category == "error"
+        if selected == OCCURRENCE_FILTERS[3]:
+            return entry.category == "mismatch"
+        return True
+
+    def _insert_occurrence_row(self, index: int):
+        entry = self.occurrences[index]
+        if not self._occurrence_matches_filter(entry):
+            return
+        try:
+            self.tree_occurrences.insert(
+                "", "end", iid=str(index),
+                values=(entry.label, format_size(entry.size), entry.display_path),
+                tags=(f"cat_{entry.category}",),
+            )
+        except Exception:
+            pass
+
+    def _refresh_occurrence_row(self, index: int):
+        entry = self.occurrences[index]
+        if self.tree_occurrences.exists(str(index)):
+            self.tree_occurrences.item(
+                str(index),
+                values=(entry.label, format_size(entry.size), entry.display_path),
+            )
+
+    def _on_occurrence_filter_change(self, _value=None):
+        self._repopulate_occurrences()
+
+    def _repopulate_occurrences(self):
+        """Redesenha a tabela de ocorrências respeitando o filtro selecionado."""
+        for item in self.tree_occurrences.get_children():
+            self.tree_occurrences.delete(item)
+        for index in range(len(self.occurrences)):
+            self._insert_occurrence_row(index)
+        self._update_occurrence_counters()
+
+    def _update_occurrence_counters(self):
+        total = len(self.occurrences)
+        extras = sum(1 for o in self.occurrences if o.category in ("extra_file", "extra_dir", "lonely"))
+        failures = sum(1 for o in self.occurrences if o.category == "error")
+        mismatches = sum(1 for o in self.occurrences if o.category == "mismatch")
+
+        self.lbl_occurrence_badge.configure(text=f"Ocorrências: {total}")
+        if total == 0:
+            self.lbl_occurrence_counts.configure(text="Nenhuma ocorrência registrada até agora.")
+        else:
+            self.lbl_occurrence_counts.configure(
+                text=(
+                    f"Total: {total}  |  Arquivos/Pastas EXTRA: {extras}  |  "
+                    f"Falhas e acessos negados: {failures}  |  Incompatibilidades: {mismatches}"
+                )
+            )
+
+    def _clear_occurrences(self):
+        self.occurrences = []
+        for item in self.tree_occurrences.get_children():
+            self.tree_occurrences.delete(item)
+        self._update_occurrence_counters()
+
+    def _selected_occurrence_paths(self):
+        paths = []
+        for item_id in self.tree_occurrences.selection():
+            try:
+                entry = self.occurrences[int(item_id)]
+            except (ValueError, IndexError):
+                continue
+            if entry.path:
+                paths.append(entry.path)
+        return paths
+
+    def _open_selected_occurrence(self):
+        """Abre no Explorer a pasta do item selecionado."""
+        paths = self._selected_occurrence_paths()
+        if not paths:
+            messagebox.showinfo("Abrir Pasta", "Selecione na lista a ocorrência que deseja localizar no Explorer.")
+            return
+        self._reveal_in_explorer(paths[0])
+
+    def _reveal_in_explorer(self, path: str):
+        """Mostra o item no Explorer do Windows (ou abre a pasta que o contém)."""
+        if os.name != "nt":
+            messagebox.showinfo("Abrir Pasta", f"Caminho do item:\n{path}")
+            return
+        try:
+            if os.path.exists(path):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            else:
+                parent = os.path.dirname(os.path.normpath(path))
+                if os.path.isdir(parent):
+                    subprocess.Popen(["explorer", parent])
+                else:
+                    messagebox.showwarning("Abrir Pasta", f"O caminho não existe mais:\n{path}")
+        except Exception as ex:
+            messagebox.showerror("Abrir Pasta", f"Não foi possível abrir o Explorer:\n{ex}")
+
+    def _export_occurrences_csv(self):
+        """Exporta a lista de ocorrências para um arquivo CSV."""
+        if not self.occurrences:
+            messagebox.showinfo("Exportar Ocorrências", "Não há ocorrências registradas para exportar.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Exportar Lista de Ocorrências",
+            defaultextension=".csv",
+            filetypes=[("Planilha CSV", "*.csv"), ("Todos os Arquivos", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle, delimiter=";")
+                writer.writerow(["Tipo", "Tamanho (bytes)", "Caminho", "Linha original do RoboCopy"])
+                for entry in self.occurrences:
+                    writer.writerow([entry.label, entry.size if entry.size is not None else "", entry.display_path, entry.raw.strip()])
+            messagebox.showinfo("Exportado", f"Lista de ocorrências salva em:\n{filepath}")
+        except Exception as ex:
+            messagebox.showerror("Erro ao Exportar", f"Não foi possível salvar o arquivo:\n{ex}")
 
     def _build_footer(self):
         """Rodapé fixo de ação com status e os grandes botões de Iniciar Cópia e Simular."""
@@ -982,6 +2227,44 @@ class RobocopyApp(ctk.CTk):
             text_color=("#16a34a", "#4ade80")
         )
         self.lbl_status.pack(side="left")
+
+        # Botão de ajuda que explica o código de saída exibido no status
+        self.btn_status_help = ctk.CTkButton(
+            inner,
+            text="?",
+            width=26,
+            height=26,
+            corner_radius=13,
+            fg_color=("#e2e8f0", "#1e293b"),
+            hover_color=("#cbd5e1", "#334155"),
+            text_color=("#0f172a", "#e2e8f0"),
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            command=self._show_status_details
+        )
+        self.btn_status_help.pack(side="left", padx=8)
+        self.tip_status = ToolTip(
+            self.btn_status_help,
+            "Execute uma cópia para ver aqui a explicação completa do código de saída do RoboCopy.",
+            wraplength=430
+        )
+
+        # Aparece apenas quando a execução termina com divergências entre as pastas
+        self.btn_resolve = ctk.CTkButton(
+            inner,
+            text="Resolver Divergências",
+            height=30,
+            fg_color=("#fef3c7", "#78350f"),
+            hover_color=("#fde68a", "#92400e"),
+            text_color=("#92400e", "#fde68a"),
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            command=self._open_sync_center_for_resolution
+        )
+        ToolTip(
+            self.btn_resolve,
+            "Abre a Central de Sincronização e lista arquivo por arquivo o que está diferente,\n"
+            "com o caminho completo e a ação que você pode aplicar em cada um.",
+            wraplength=400
+        )
 
         # Botões de ação à direita
         self.btn_cancel = ctk.CTkButton(
@@ -1058,19 +2341,56 @@ class RobocopyApp(ctk.CTk):
         if self.var_mirror.get():
             self.var_copy_e.set(False)
             self.var_copy_s.set(False)
+            self.var_two_way.set(False)
         self.update_command_preview()
 
     def _on_mode_change(self):
         self.update_command_preview()
 
+    def _on_two_way_change(self):
+        """Sincronização dupla é incompatível com espelhamento e com mover arquivos."""
+        if self.var_two_way.get():
+            self.var_mirror.set(False)
+            self.var_move_all.set(False)
+            self.var_move_files.set(False)
+            self.var_copy_e.set(True)
+            self.var_copy_s.set(False)
+            self.var_xo.set(True)
+        self.update_command_preview()
+
+    def _toggle_extra_flag(self, flag: str):
+        """Adiciona ou remove uma flag pelos botões de atalho."""
+        current = self.var_extra_args.get().strip()
+        tokens = current.split()
+        upper = flag.upper()
+
+        remaining = [t for t in tokens if t.split(":", 1)[0].upper() != upper]
+        if len(remaining) != len(tokens):
+            self.var_extra_args.set(" ".join(remaining))
+        else:
+            tokens.append(flag)
+            self.var_extra_args.set(" ".join(tokens))
+
+    def _on_extra_args_change(self):
+        """Valida as flags livres e avisa quando alguma delas apaga arquivos."""
+        diagnosis = analyze_extra_args(self.var_extra_args.get())
+        for label in self.extra_args_warning_labels:
+            try:
+                label.configure(text=diagnosis["warning"])
+            except Exception:
+                pass
+        self.update_command_preview()
+
     def _on_chk_mov_change(self):
         if self.var_move_files.get():
             self.var_move_all.set(False)
+            self.var_two_way.set(False)
         self.update_command_preview()
 
     def _on_chk_move_change(self):
         if self.var_move_all.get():
             self.var_move_files.set(False)
+            self.var_two_way.set(False)
         self.update_command_preview()
 
     def _on_mt_change(self, val):
@@ -1122,6 +2442,9 @@ class RobocopyApp(ctk.CTk):
 
         cfg.no_progress = self.var_log_np.get()
         cfg.log_file = self.entry_log_file.get().strip()
+
+        cfg.is_two_way_sync = self.var_two_way.get()
+        cfg.extra_args = self.var_extra_args.get().strip()
 
         # Sobrescrita inteligente e isolada se o painel GoodSync estiver ativo
         if self.sync_visible:
@@ -1249,6 +2572,10 @@ class RobocopyApp(ctk.CTk):
         self.entry_log_file.delete(0, "end")
         self.entry_log_file.insert(0, cfg.log_file)
 
+        self.var_two_way.set(cfg.is_two_way_sync)
+        if cfg.extra_args != self.var_extra_args.get():
+            self.var_extra_args.set(cfg.extra_args)
+
         # Sincroniza widgets do painel GoodSync caso existam
         if hasattr(self, "var_sync_mt32"):
             self.var_sync_mt32.set(cfg.multi_threaded >= 32)
@@ -1352,10 +2679,38 @@ class RobocopyApp(ctk.CTk):
 
     def _start_robocopy(self):
         cfg = self._gather_config_from_ui()
-        if cfg.mirror:
+
+        diagnosis = analyze_extra_args(cfg.extra_args)
+        if diagnosis["is_destructive"]:
+            details = "\n".join(
+                f"  {flag} — {DESTRUCTIVE_FLAGS[flag]}" for flag in diagnosis["destructive"]
+            )
+            confirm = messagebox.askyesno(
+                "Atenção - Flags Personalizadas que Apagam Arquivos",
+                "As flags personalizadas que você digitou incluem parâmetros que apagam arquivos:\n\n"
+                f"{details}\n\nDeseja realmente executar com esses parâmetros?"
+            )
+            if not confirm:
+                return
+
+        if cfg.is_two_way_sync:
+            confirm = messagebox.askyesno(
+                "Sincronização Dupla (2 vias)",
+                "A operação será executada em duas etapas automáticas:\n\n"
+                f"  Etapa 1: {cfg.source or '(origem)'}  ➔  {cfg.destination or '(destino)'}\n"
+                f"  Etapa 2: {cfg.destination or '(destino)'}  ➔  {cfg.source or '(origem)'}\n\n"
+                "Somente arquivos mais novos são copiados em cada direção (/XO) e nada é apagado.\n"
+                "No final, o status mostra o resultado consolidado das duas etapas.\n\n"
+                "Deseja iniciar?"
+            )
+            if not confirm:
+                return
+        elif cfg.mirror:
             confirm = messagebox.askyesno(
                 "Atenção - Modo Espelhamento",
                 "O modo de espelhamento excluirá do destino arquivos que não estejam na origem.\n\n"
+                "Dica: use 'Analisar Diferenças' na Central de Sincronização para ver antes, "
+                "arquivo por arquivo, o que seria apagado.\n\n"
                 "Deseja realmente prosseguir com a cópia?"
             )
             if not confirm:
@@ -1390,11 +2745,23 @@ class RobocopyApp(ctk.CTk):
             return
 
         # Bloqueio de controles
+        self.is_busy = True
         self.btn_run.configure(state="disabled")
         self.btn_simulate.configure(state="disabled")
         self.btn_cancel.configure(state="normal")
-        
-        mode_label = "Simulação (Testando sem risco)" if is_dry_run else "Copiando arquivos"
+        self.btn_analyze.configure(state="disabled")
+        self.btn_apply_plan.configure(state="disabled")
+        self.btn_resolve.pack_forget()
+
+        # As ocorrências sempre refletem a execução atual
+        self._clear_occurrences()
+
+        if cfg.is_two_way_sync:
+            mode_label = "Sincronização dupla em andamento (2 etapas)"
+        elif is_dry_run:
+            mode_label = "Simulação (Testando sem risco)"
+        else:
+            mode_label = "Copiando arquivos"
         self.lbl_status.configure(text=f"Status: {mode_label}...", text_color=("#d97706", "#facc15"))
 
         self.engine.run(
@@ -1407,16 +2774,45 @@ class RobocopyApp(ctk.CTk):
         self.after(0, self._append_log_line, line)
 
     def _append_log_line(self, line: str):
-        self.log_textbox.insert("end", line)
+        """Escreve a linha no console aplicando a cor da categoria e alimenta as ocorrências."""
+        category = classify_log_line(line)
+
+        try:
+            self.log_textbox.insert("end", line, f"cat_{category}")
+        except Exception:
+            self.log_textbox.insert("end", line)
+
+        self._trim_log_if_needed()
         self.log_textbox.see("end")
+
+        if category in OCCURRENCE_CATEGORIES:
+            entry = parse_log_entry(line)
+            if entry is not None:
+                self._register_occurrence(entry)
+
+    def _trim_log_if_needed(self):
+        """Evita travamentos descartando o início do log quando ele fica gigante."""
+        try:
+            total_lines = int(self.log_textbox.index("end-1c").split(".")[0])
+        except Exception:
+            return
+        if total_lines > MAX_LOG_LINES:
+            self.log_textbox.delete("1.0", f"{LOG_TRIM_BLOCK}.0")
 
     def _handle_finish(self, exit_code: int, title: str, desc: str, summary: dict):
         self.after(0, self._on_process_completed, exit_code, title, desc, summary)
 
     def _on_process_completed(self, exit_code: int, title: str, desc: str, summary: dict):
+        self.is_busy = False
         self.btn_run.configure(state="normal")
         self.btn_simulate.configure(state="normal")
         self.btn_cancel.configure(state="disabled")
+        self.btn_analyze.configure(state="normal")
+        if self.sync_differences:
+            self.btn_apply_plan.configure(state="normal")
+
+        self.last_summary = summary or {}
+        self.last_exit_code = exit_code
 
         self.card_dirs.configure(
             text=f"Total: {summary.get('dirs_total', '-')}\nCopiados: {summary.get('dirs_copied', '-')}"
@@ -1431,21 +2827,106 @@ class RobocopyApp(ctk.CTk):
             text=f"Média: {summary.get('speed', '-')}\nFalhas: {summary.get('files_failed', '0')}"
         )
 
-        if exit_code < 8:
-            status_color = ("#16a34a", "#4ade80")
-        else:
-            status_color = ("#dc2626", "#f87171")
+        self._update_status_result(exit_code, title, desc, summary)
 
+    def _update_status_result(self, exit_code: int, title: str, desc: str, summary: dict):
+        """Atualiza o rodapé com o resultado consolidado, a explicação e os atalhos de ação."""
+        steps = (summary or {}).get("steps") or []
+
+        if exit_code >= 8:
+            status_color = ("#dc2626", "#f87171")
+        elif exit_code >= 2:
+            status_color = ("#d97706", "#facc15")
+        else:
+            status_color = ("#16a34a", "#4ade80")
+
+        suffix = f" (resultado consolidado de {len(steps)} etapas)" if len(steps) > 1 else ""
         self.lbl_status.configure(
-            text=f"Status: [{exit_code}] {title} - {desc}",
+            text=f"Status: [{exit_code}] {title} - {desc}{suffix}",
             text_color=status_color
         )
 
+        explanation = (summary or {}).get("explanation") or explain_exit_code(exit_code, steps)
+        self.status_explanation = explanation
+        self.tip_status.set_text(explanation)
+
+        # O atalho de resolução só faz sentido quando há divergência entre as pastas
+        has_divergence = bool(exit_code & 2 or exit_code & 4) or any(
+            o.category in ("extra_file", "extra_dir", "lonely", "mismatch") for o in self.occurrences
+        )
+        if has_divergence:
+            if not self.btn_resolve.winfo_manager():
+                self.btn_resolve.pack(side="left", padx=(4, 0))
+        else:
+            self.btn_resolve.pack_forget()
+
+    def _show_status_details(self):
+        """Janela explicando em detalhes o código de saída da última execução."""
+        explanation = getattr(self, "status_explanation", "") or (
+            "Nenhuma execução foi concluída ainda nesta sessão.\n\n"
+            "Assim que uma cópia ou sincronização terminar, este botão mostra:\n"
+            "  - o que o código de saída do RoboCopy significa;\n"
+            "  - o impacto real daquele resultado nos seus arquivos;\n"
+            "  - o que fazer para resolver cada pendência;\n"
+            "  - o resultado de cada etapa, quando a operação tem mais de uma."
+        )
+
+        window = ctk.CTkToplevel(self)
+        window.title("Entenda o resultado da operação")
+        window.geometry("640x460")
+        window.transient(self)
+
+        ctk.CTkLabel(
+            window,
+            text="Explicação do resultado do RoboCopy",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
+        ).pack(anchor="w", padx=16, pady=(16, 4))
+
+        textbox = ctk.CTkTextbox(
+            window,
+            wrap="word",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=("#f8fafc", "#0b0f19"),
+            text_color=("#0f172a", "#cbd5e1")
+        )
+        textbox.pack(fill="both", expand=True, padx=16, pady=6)
+        textbox.insert("1.0", explanation)
+        textbox.configure(state="disabled")
+
+        buttons = ctk.CTkFrame(window, fg_color="transparent")
+        buttons.pack(fill="x", padx=16, pady=(4, 16))
+
+        ctk.CTkButton(
+            buttons, text="Fechar", width=100, command=window.destroy
+        ).pack(side="right")
+
+        ctk.CTkButton(
+            buttons, text="Copiar Explicação", width=150,
+            fg_color=("#e2e8f0", "#2b2b2b"), hover_color=("#cbd5e1", "#3d3d3d"),
+            text_color=("#0f172a", "#ffffff"),
+            command=lambda: (self.clipboard_clear(), self.clipboard_append(explanation))
+        ).pack(side="right", padx=8)
+
+        try:
+            window.after(150, window.grab_set)
+        except Exception:
+            pass
+
+    def _open_sync_center_for_resolution(self):
+        """Abre a Central de Sincronização já analisando as divergências encontradas."""
+        if not self.sync_visible:
+            self._toggle_sync_panel()
+        try:
+            self.sync_container.update_idletasks()
+        except Exception:
+            pass
+        self._analyze_differences()
+
     def _cancel_robocopy(self):
-        confirm = messagebox.askyesno("Interromper", "Deseja realmente cancelar a cópia em andamento?")
+        confirm = messagebox.askyesno("Interromper", "Deseja realmente cancelar a operação em andamento?")
         if confirm:
             self.lbl_status.configure(text="Status: Cancelando processo...", text_color=("#dc2626", "#f87171"))
-            stopped = self.engine.stop()
+            stopped = self.engine.stop() or self.analyzer.stop() or self.plan_executor.stop()
             if stopped:
                 self._append_log_line("\n[OPERAÇÃO CANCELADA PELO USUÁRIO]\n")
 
@@ -1454,6 +2935,7 @@ class RobocopyApp(ctk.CTk):
     # -------------------------------------------------------------
     def _clear_log(self):
         self.log_textbox.delete("1.0", "end")
+        self._clear_occurrences()
 
     def _copy_log_to_clipboard(self):
         content = self.log_textbox.get("1.0", "end")

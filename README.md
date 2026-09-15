@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%20Windows%2011%20%7C%20Server-0078D6?style=flat-square&logo=windows&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-5391FE?style=flat-square&logo=powershell&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/pedropaivaf/RoboCopyManager)
-[![Tests](https://img.shields.io/badge/Tests-145%2F145%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
+[![Tests](https://img.shields.io/badge/Tests-147%2F147%20Passing-brightgreen?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Speed](https://img.shields.io/badge/Engine-Native%20Kernel%20%2FMT%3A128-orange?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![Architecture](https://img.shields.io/badge/Architecture-GUI%20%2B%20TUI%20%2B%20CLI-purple?style=flat-square)](https://github.com/pedropaivaf/RoboCopyManager)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
@@ -193,7 +193,8 @@ A interface grafica foi projetada com arquitetura focada no usuario final e em e
 
 - **Alternancia Imediata de Tema**: Suporte completo a **Tema Escuro** (Dark Mode - fundo `#1E1E1E` para menor fadiga visual) e **Tema Claro** (Light Mode - alto contraste para ambientes iluminados) com preservacao de visibilidade de labels e botoes.
 - **Botoes de Indice Contextual `(i)`**: Cada opcao e parametro possui um icone explicativo minimalista. Ao posicionar o mouse sobre ele, uma janela suspensa explica em linguagem simples o que a opcao faz, quando usar e quais riscos ela pode apresentar. O texto quebra em varias linhas e a janela se reposiciona sozinha para nunca sair pela borda da tela.
-- **Tela sem rolagem de pagina**: a configuracao fica compacta no topo, os paineis avancados abrem no lugar e o monitor recebe todo o espaco restante. Nada de rolar a janela inteira para acompanhar a saida.
+- **Tela sem rolagem de pagina**: a configuracao fica compacta no topo e o monitor recebe todo o espaco restante. Nada de rolar a janela inteira para acompanhar a saida.
+- **Paineis em janela propria**: as Opcoes Avancadas e a Central de Sincronizacao abrem em uma janela separada, com rolagem propria e redimensionavel. Assim elas nunca disputam altura com o console nem empurram os botoes de acao para fora da tela, mesmo em monitores de 1366x768.
 - **Console de Streaming em Tempo Real**: Monitor integrado com auto-scroll que exibe linha a linha a saida do Robocopy, incluindo percentual de transferencia, velocidade e tabela resumo final de arquivos copiados, ignorados e falhados.
 - **Dialogos Nativos do Windows Explorer**: Botoes "Procurar..." que abrem a selecao nativa de pastas do Windows, alem de aceitar caminhos colados com ou sem aspas e caminhos de rede UNC (`\\servidor\compartilhamento`).
 - **Validacao Proativa Contra Perda de Dados**: O sistema impede operacoes caso a Origem seja identica ao Destino, avisa se a pasta de origem nao existir e alerta com destaque vermelho antes de qualquer operacao destrutiva (`/MIR` ou `/MOVE`).
@@ -602,7 +603,7 @@ RoboCopyManager/
 
 ## Garantia de Qualidade e Bateria de Testes
 
-O projeto conta com **145 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
+O projeto conta com **147 testes automatizados**, assegurando que qualquer modificacao futura preserve a compatibilidade e a seguranca dos dados:
 
 ```bash
 pytest tests/ -v
@@ -613,7 +614,7 @@ Exemplo de execucao da suite:
 ============================= test session starts =============================
 platform win32 -- Python 3.10+, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\...\RoboCopyManager, configfile: pytest.ini
-collected 145 items
+collected 147 items
 
 tests\test_audit_all_options.py .............................            [ 21%]
 tests\test_cli_integration.py ....                                       [ 24%]
@@ -622,7 +623,7 @@ tests\test_powershell_script.py .....                                    [ 43%]
 tests\test_robocopy.py .......................                           [ 60%]
 tests\test_sync_center.py .......................................................  [100%]
 
-============================= 145 passed in 5.40s =============================
+============================= 147 passed in 5.40s =============================
 ```
 
 A suite cobre, entre outros pontos:

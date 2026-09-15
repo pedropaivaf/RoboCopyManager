@@ -252,7 +252,7 @@ class RobocopyApp(ctk.CTk):
 
         # Configuração da Janela
         self.title("RoboCopy Manager - Transferência e Backup de Arquivos")
-        self.minsize(1020, 720)
+        self.minsize(1000, 600)
 
         # Inicia automaticamente em tela cheia (maximizado no Windows)
         try:
@@ -271,10 +271,13 @@ class RobocopyApp(ctk.CTk):
         # Ícone da Janela e da Barra de Tarefas
         self._apply_app_icon()
 
-        # Criação da Interface
+        # Criação da Interface.
+        # O rodapé é montado ANTES do miolo: o container central se expande para
+        # ocupar todo o espaço livre e, se fosse empacotado primeiro, empurraria
+        # os botões de ação para fora da janela em telas de menor altura.
         self._build_header()
-        self._build_main_container()
         self._build_footer()
+        self._build_main_container()
 
         # Aparência das tabelas (ocorrências e divergências)
         self._configure_tree_style()
@@ -335,6 +338,23 @@ class RobocopyApp(ctk.CTk):
             return
         try:
             self.iconbitmap(default=icon_path)
+        except Exception:
+            pass
+
+    def _apply_icon_to(self, window):
+        """Garante a logo também nas janelas de painel abertas pelo aplicativo."""
+        icon_path = getattr(self, "_icon_path", "")
+        if not icon_path or not os.path.exists(icon_path):
+            return
+        # O CustomTkinter redefine a barra de título da janela pouco depois de
+        # exibi-la, então o ícone é aplicado agora e logo em seguida.
+        for delay in (0, 250):
+            self.after(delay, lambda w=window: self._safe_iconbitmap(w, icon_path))
+
+    @staticmethod
+    def _safe_iconbitmap(window, icon_path: str):
+        try:
+            window.iconbitmap(icon_path)
         except Exception:
             pass
 
@@ -435,6 +455,7 @@ class RobocopyApp(ctk.CTk):
         """
         container = ctk.CTkFrame(self, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=24, pady=4)
+        self.main_container = container
 
         # Área de configuração (topo): ocupa apenas a altura de que precisa.
         self.config_area = ctk.CTkFrame(container, fg_color="transparent")
@@ -449,12 +470,24 @@ class RobocopyApp(ctk.CTk):
         # 3. Barra de Botões Alternadores (Avançado e Sincronizar Pastas)
         self._build_toggle_bar()
 
-        # 4 e 5. Painéis sob demanda. São quadros simples, sem rolagem própria:
-        # rolagem dentro de rolagem é justamente o que fazia a tela travar.
-        self.sync_container = ctk.CTkFrame(self.config_area, fg_color="transparent")
+        # 4 e 5. Painéis sob demanda em janelas próprias. Encaixados na tela
+        # principal, eles disputavam altura com o monitor e, em telas menores,
+        # parte do conteúdo ficava inacessível. Em janela separada cada painel
+        # tem a própria rolagem e o monitor continua inteiro.
+        self.sync_window = self._create_panel_window(
+            "Central de Sincronização de Pastas (Padrão GoodSync)",
+            width=1180, height=330,
+            on_close=self._toggle_sync_panel
+        )
+        self.sync_container = self.sync_window.body
         self._build_sync_panel()
 
-        self.advanced_container = ctk.CTkFrame(self.config_area, fg_color="transparent")
+        self.advanced_window = self._create_panel_window(
+            "Opções Avançadas do RoboCopy",
+            width=1120, height=470,
+            on_close=self._toggle_advanced_panel
+        )
+        self.advanced_container = self.advanced_window.body
         self._build_advanced_tabs()
 
         # 6. Monitor: recebe todo o espaço restante da janela.
@@ -670,40 +703,105 @@ class RobocopyApp(ctk.CTk):
             "Abre a central dedicada para sincronização de diretórios no padrão GoodSync (Espelhamento Rígido, Atualização, Sincronização Bidirecional de 2 Vias, Mover e Filtros)."
         ).pack(side="left", padx=6)
 
+    def _create_panel_window(self, title: str, width: int, height: int, on_close):
+        """
+        Cria a janela de um painel de opções, já oculta.
+
+        O conteúdo fica dentro de um quadro rolável: em telas menores o painel
+        continua acessível por inteiro, sem cortar nada e sem espremer a janela
+        principal. A janela é criada junto com o aplicativo (e não no primeiro
+        clique) para que todos os controles existam desde o início.
+        """
+        window = ctk.CTkToplevel(self)
+        window.title(title)
+        window.geometry(f"{width}x{height}")
+        window.minsize(760, 280)
+        window.withdraw()
+        window.protocol("WM_DELETE_WINDOW", on_close)
+        # Tamanho desejado do painel. Uma janela ainda oculta reporta largura 1,
+        # então o valor precisa ficar guardado para a hora de exibi-la.
+        window.preferred_size = (width, height)
+
+        body = ctk.CTkScrollableFrame(window, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+        window.body = body
+        return window
+
+    def _show_panel_window(self, window):
+        """Exibe o painel centralizado sobre a janela principal."""
+        try:
+            self.update_idletasks()
+            largura, altura = getattr(window, "preferred_size", (1100, 500))
+
+            # Se o usuário já redimensionou a janela, o tamanho dele é mantido.
+            if window.winfo_width() > 1:
+                largura = window.winfo_width()
+            if window.winfo_height() > 1:
+                altura = window.winfo_height()
+
+            # Nunca maior que a área visível do monitor.
+            largura = min(largura, window.winfo_screenwidth() - 60)
+            altura = min(altura, window.winfo_screenheight() - 120)
+
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - largura) // 2)
+            y = max(0, self.winfo_rooty() + 60)
+            # Garante que a janela inteira permanece dentro da tela.
+            x = max(0, min(x, window.winfo_screenwidth() - largura))
+            y = max(0, min(y, window.winfo_screenheight() - altura - 40))
+
+            window.geometry(f"{int(largura)}x{int(altura)}+{int(x)}+{int(y)}")
+        except Exception:
+            pass
+
+        try:
+            window.deiconify()
+            window.lift()
+            window.focus_force()
+        except Exception:
+            pass
+
+        self._apply_icon_to(window)
+
+    def _hide_panel_window(self, window):
+        try:
+            window.withdraw()
+        except Exception:
+            pass
+
     def _toggle_advanced_panel(self):
-        """Alterna a exibição das abas avançadas de forma exclusiva."""
+        """Abre ou fecha a janela de opções avançadas, de forma exclusiva."""
         if self.advanced_visible:
-            self.advanced_container.pack_forget()
+            self._hide_panel_window(self.advanced_window)
             self.btn_toggle_adv.configure(text="Mostrar Opções Avançadas")
             self.advanced_visible = False
             self.update_command_preview()
         else:
-            # Se a central GoodSync estiver aberta, fecha-a para evitar conflito de opções
+            # A Central GoodSync assume o controle das opções enquanto está aberta,
+            # então as duas janelas não ficam abertas ao mesmo tempo.
             if self.sync_visible:
-                self.sync_container.pack_forget()
+                self._hide_panel_window(self.sync_window)
                 self.btn_toggle_sync.configure(text="Sincronizar Pastas (Modo GoodSync)")
                 self.sync_visible = False
 
-            self.advanced_container.pack(fill="x", pady=(4, 8))
+            self._show_panel_window(self.advanced_window)
             self.btn_toggle_adv.configure(text="Ocultar Opções Avançadas")
             self.advanced_visible = True
             self.update_command_preview()
 
     def _toggle_sync_panel(self):
-        """Alterna a exibição do painel dedicado GoodSync de forma exclusiva."""
+        """Abre ou fecha a Central de Sincronização, de forma exclusiva."""
         if self.sync_visible:
-            self.sync_container.pack_forget()
+            self._hide_panel_window(self.sync_window)
             self.btn_toggle_sync.configure(text="Sincronizar Pastas (Modo GoodSync)")
             self.sync_visible = False
             self.update_command_preview()
         else:
-            # Se as opções avançadas estiverem abertas, fecha-as para que a central GoodSync assuma o controle
             if self.advanced_visible:
-                self.advanced_container.pack_forget()
+                self._hide_panel_window(self.advanced_window)
                 self.btn_toggle_adv.configure(text="Mostrar Opções Avançadas")
                 self.advanced_visible = False
 
-            self.sync_container.pack(fill="x", pady=(4, 8))
+            self._show_panel_window(self.sync_window)
             self.btn_toggle_sync.configure(text="Ocultar Sincronização GoodSync")
             self.sync_visible = True
             self._on_goodsync_mode_change()
@@ -2468,6 +2566,7 @@ class RobocopyApp(ctk.CTk):
         """Rodapé fixo de ação com status e os grandes botões de Iniciar Cópia e Simular."""
         footer = ctk.CTkFrame(self, fg_color=("#f8fafc", "#181818"), corner_radius=0, border_width=1, border_color=("#e2e8f0", "#2d2d2d"))
         footer.pack(fill="x", side="bottom")
+        self.footer_frame = footer
 
         inner = ctk.CTkFrame(footer, fg_color="transparent")
         inner.pack(fill="x", padx=24, pady=12)
@@ -2564,9 +2663,10 @@ class RobocopyApp(ctk.CTk):
     # EVENTOS E SINCRONIZAÇÃO
     # -------------------------------------------------------------
     def _on_preset_selected(self):
-        # Se o painel GoodSync estiver aberto, fecha-o para que o preset padrão tenha prioridade imediata
+        # Se a Central estiver aberta, fecha-a para que o preset da tela principal
+        # tenha prioridade imediata sobre o modo GoodSync.
         if self.sync_visible:
-            self.sync_container.pack_forget()
+            self._hide_panel_window(self.sync_window)
             self.btn_toggle_sync.configure(text="Sincronizar Pastas (Modo GoodSync)")
             self.sync_visible = False
 

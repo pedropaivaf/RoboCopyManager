@@ -582,6 +582,57 @@ class TestGUIIntegration(unittest.TestCase):
         self.app._on_mode_segment_change("Backup Seguro")
         self.assertEqual(self.app.selected_preset_key.get(), "backup_incremental")
 
+    def test_gui_panels_open_in_their_own_window(self):
+        """
+        Os painéis de opções abrem em janela própria com rolagem: encaixados na
+        tela principal, eles empurravam o monitor (e o rodapé) para fora em
+        telas de menor altura, sem deixar o usuário rolar até o resto.
+        """
+        # As janelas existem desde o início, para que todos os controles que a
+        # configuração lê estejam disponíveis mesmo com os painéis fechados.
+        self.assertIsNotNone(self.app.advanced_window)
+        self.assertIsNotNone(self.app.sync_window)
+        self.assertEqual(self.app.advanced_window.state(), "withdrawn")
+        self.assertEqual(self.app.sync_window.state(), "withdrawn")
+
+        # O conteúdo fica em um quadro rolável dentro da janela.
+        self.assertTrue(hasattr(self.app.advanced_window, "body"))
+        self.assertIs(self.app.advanced_container, self.app.advanced_window.body)
+        self.assertIs(self.app.sync_container, self.app.sync_window.body)
+
+        self.app._toggle_advanced_panel()
+        self.app.update()
+        self.assertTrue(self.app.advanced_visible)
+        self.assertEqual(self.app.advanced_window.state(), "normal")
+
+        # Abrir a Central fecha as opções avançadas (as duas disputam a config).
+        self.app._toggle_sync_panel()
+        self.app.update()
+        self.assertFalse(self.app.advanced_visible)
+        self.assertEqual(self.app.advanced_window.state(), "withdrawn")
+        self.assertEqual(self.app.sync_window.state(), "normal")
+
+        self.app._toggle_sync_panel()
+        self.app.update()
+        self.assertFalse(self.app.sync_visible)
+        self.assertEqual(self.app.sync_window.state(), "withdrawn")
+
+    def test_gui_action_buttons_stay_inside_the_window(self):
+        """O rodapé de ações é montado antes do miolo e nunca é empurrado para fora."""
+        self.app.update_idletasks()
+        ordem = list(self.app.pack_slaves())
+
+        self.assertIn(self.app.footer_frame, ordem)
+        self.assertIn(self.app.main_container, ordem)
+        self.assertLess(
+            ordem.index(self.app.footer_frame),
+            ordem.index(self.app.main_container),
+            "O rodapé precisa ser empacotado antes do container expansível, "
+            "senão ele é empurrado para fora da janela em telas de menor altura."
+        )
+        self.assertTrue(self.app.main_container.pack_info().get("expand"))
+        self.assertEqual(self.app.footer_frame.pack_info().get("side"), "bottom")
+
     def test_gui_sync_filters_only_show_in_filter_mode(self):
         """Os campos de filtro só aparecem no modo que realmente os utiliza."""
         if not self.app.sync_visible:

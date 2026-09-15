@@ -88,33 +88,65 @@ irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.
 ```
 
 #### Como Funciona (Padrao Win11Debloat):
-1. O comando faz a leitura do script `RoboCopy.ps1` diretamente da branch `main` do GitHub para a memoria RAM.
-2. O script localiza ou baixa a versao oficial da aplicacao grafica (`RoboCopyManager.exe`) para o cache local do Windows (`%LOCALAPPDATA%\RoboCopyManager`).
-3. Solicita elevacao administrativa UAC e **abre imediatamente a Interface Grafica completa (GUI Tkinter)** na tela do computador!
-4. Em execucoes posteriores, a interface grafica abre instantaneamente em menos de 1 segundo utilizando o cache.
-5. Caso deseje executar o menu em modo texto dentro do terminal, basta adicionar o parametro `-CLI`:
-   ```powershell
-   irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1 | iex -CLI
-   ```
+1. O comando le o script `RoboCopy.ps1` direto da branch `main` do GitHub para a memoria RAM.
+2. O script baixa o **codigo-fonte** da aplicacao (os cinco modulos `.py`, cerca de 240 KB) para o cache local em `%LOCALAPPDATA%\RoboCopyManager\app`.
+3. Localiza o Python da maquina. Se nao houver nenhum, instala automaticamente pelo `winget` (uma unica vez).
+4. Instala as bibliotecas da interface (`customtkinter` e `pillow`) caso ainda nao estejam presentes.
+5. **Abre a interface grafica completa** com `pythonw.exe`, sem deixar console preto atras da janela.
+
+> Nao existe executavel compilado nesse fluxo: como os arquivos vem da branch `main` a cada execucao, **voce sempre roda a versao mais recente do repositorio**, sem precisar recompilar ou republicar nada.
+
+#### Parametros do One-Liner
+
+Para passar qualquer parametro, use a forma com `scriptblock` (o `irm ... | iex` puro **nao aceita argumentos**, porque `iex` nao tem esses parametros):
+
+```powershell
+# Menu em modo texto dentro do proprio terminal
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1"))) -CLI
+
+# Forca a limpeza do cache local e rebaixa tudo do zero
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1"))) -Update
+
+# Execucao direta, sem menu (para scripts e agendamentos)
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1"))) -Source "C:\Origem" -Destination "D:\Destino" -Mode goodsync_two_way -DryRun
+```
+
+#### Se a maquina nao tiver Python
+
+O script tenta instalar sozinho via `winget install Python.Python.3.12`. Se o `winget` nao existir (Windows mais antigo), ele avisa e cai no menu em modo texto do proprio PowerShell, que funciona sem nenhuma dependencia. Para ter a interface grafica nesse caso, instale o Python manualmente em <https://www.python.org/downloads/> marcando **"Add python.exe to PATH"**.
 
 ---
 
 ### Metodo 2: Aplicativo Desktop Executavel (GUI Portatil)
 
-Para quem prefere uma aplicacao de janela rica, moderna e totalmente grafica:
+Para maquinas sem Python e sem acesso a internet, ou para rodar de um pendrive:
 
 1. Baixe o executavel direto na pasta [`dist/RoboCopyManager.exe`](dist/RoboCopyManager.exe).
 2. Execute o arquivo com duplo clique.
-3. O software abre imediatamente em tela cheia sem necessidade de instalar Python, bibliotecas ou runtimes externos. Pode ser copiado e rodado diretamente de um pendrive.
+3. O software abre imediatamente em tela cheia sem necessidade de instalar Python, bibliotecas ou runtimes externos.
+
+> **Atencao**: o `.exe` e um pacote compilado manualmente e **so contem o que existia quando ele foi gerado**. Para embutir as mudancas mais recentes do codigo, recompile com `python build_exe.py` e faca commit do arquivo. Quem quiser sempre a versao mais nova sem recompilar nada deve usar o **Metodo 1**, que roda direto do codigo-fonte da branch `main`.
 
 ---
 
-### Metodo 3: Execucao Local em Lote (Run.bat)
+### Metodo 3: Execucao Local a Partir do Repositorio
 
 Caso voce tenha clonado o repositorio em sua maquina:
 
-- De um duplo clique no arquivo `Run.bat`.
-- O lote solicita privilegios administrativos via UAC e lanca o script PowerShell local com a politica de execucao liberada (`-ExecutionPolicy Bypass`).
+```powershell
+git clone https://github.com/pedropaivaf/RoboCopyManager.git
+cd RoboCopyManager
+pip install -r requirements.txt
+python robocopy_gui.py
+```
+
+Ou, sem digitar nada: de um duplo clique no arquivo `Run.bat`, que solicita privilegios administrativos via UAC e lanca o script PowerShell local com a politica de execucao liberada (`-ExecutionPolicy Bypass`).
+
+Para o terminal em Python, com analise de divergencias e log colorido:
+
+```powershell
+python robocopy_cli.py C:\Origem D:\Destino --analyze
+```
 
 ---
 

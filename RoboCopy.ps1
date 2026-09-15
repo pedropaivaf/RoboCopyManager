@@ -8,7 +8,13 @@
 .EXAMPLE
     irm https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1 | iex
 .EXAMPLE
+    & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/RoboCopy.ps1"))) -CLI
+.EXAMPLE
     .\RoboCopy.ps1 -Source "C:\Origem" -Destination "D:\Destino" -Mode backup -DryRun
+.NOTES
+    A interface grafica nao depende de executavel compilado: o script baixa os
+    modulos Python da branch main para %LOCALAPPDATA%\RoboCopyManager\app e os
+    executa com o Python da maquina, instalando o que faltar automaticamente.
 #>
 
 [CmdletBinding()]
@@ -104,86 +110,239 @@ function Select-FolderDialog([string]$title) {
     return ""
 }
 
+# ------------------------------------------------------------------------------
+# BOOTSTRAP DO APLICATIVO (PADRAO Win11Debloat): CODIGO-FONTE DIRETO DO GITHUB
+# ------------------------------------------------------------------------------
+# Nao usa executavel compilado. O script baixa os modulos Python da branch main
+# para o cache local e abre a interface grafica com o Python da maquina.
+$global:RcmRepoRaw = "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main"
+$global:RcmAppDir = "$env:LOCALAPPDATA\RoboCopyManager\app"
+
+# Modulos que compoem a aplicacao.
+$global:RcmModules = @(
+    "robocopy_gui.py",
+    "robocopy_engine.py",
+    "sync_analyzer.py",
+    "presets.py",
+    "robocopy_cli.py"
+)
+
+$global:RcmAssets = @(
+    "assets/desktop_icon.ico",
+    "assets/app_icon.ico"
+)
+
+function Get-AppSource {
+    <#
+        Baixa a versao mais recente dos modulos Python direto da branch main.
+        Os arquivos somam poucos KB, entao a atualizacao e sempre instantanea.
+    #>
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    } catch { }
+
+    if ($Update -and (Test-Path $global:RcmAppDir)) {
+        Remove-Item $global:RcmAppDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $assetsDir = Join-Path $global:RcmAppDir "assets"
+    foreach ($dir in @($global:RcmAppDir, $assetsDir)) {
+        if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+    }
+
+    $previousProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+
+    try {
+        Write-Host "[RoboCopy Manager] Baixando a versao mais recente do GitHub..." -ForegroundColor Yellow
+
+        # Parametro aleatorio evita o cache de 5 minutos do raw.githubusercontent.com
+        $cacheBuster = [DateTime]::UtcNow.Ticks
+
+        foreach ($module in $global:RcmModules) {
+            $destination = Join-Path $global:RcmAppDir $module
+            Invoke-WebRequest -Uri "$global:RcmRepoRaw/$module`?nocache=$cacheBuster" `
+                              -OutFile $destination -UseBasicParsing -ErrorAction Stop
+            Write-Host "   $module" -ForegroundColor DarkGray
+        }
+
+        # Os icones mudam raramente: baixados apenas na primeira vez.
+        foreach ($asset in $global:RcmAssets) {
+            $destination = Join-Path $global:RcmAppDir ($asset -replace "/", "\")
+            if (Test-Path $destination) { continue }
+            try {
+                Invoke-WebRequest -Uri "$global:RcmRepoRaw/$asset" -OutFile $destination -UseBasicParsing -ErrorAction Stop
+            } catch {
+                # Sem icone a aplicacao abre normalmente.
+            }
+        }
+
+        Write-Host "[RoboCopy Manager] Codigo-fonte atualizado em: $global:RcmAppDir" -ForegroundColor Gray
+        return $global:RcmAppDir
+    } catch {
+        Write-Host "[ERRO] Falha ao baixar o codigo-fonte: $($_.Exception.Message)" -ForegroundColor Red
+        # Se ja existe uma copia local de uma execucao anterior, usa ela.
+        if (Test-Path (Join-Path $global:RcmAppDir "robocopy_gui.py")) {
+            Write-Host "[INFO] Usando a copia local baixada anteriormente." -ForegroundColor Yellow
+            return $global:RcmAppDir
+        }
+        return $null
+    } finally {
+        $ProgressPreference = $previousProgress
+    }
+}
+
+function Find-Python {
+    <# Localiza um Python 3 utilizavel, ignorando o atalho da Microsoft Store. #>
+    $candidates = @()
+
+    if (Get-Command "py.exe" -ErrorAction SilentlyContinue) {
+        $resolved = & py.exe -3 -c "import sys; print(sys.executable)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $resolved) { $candidates += $resolved.Trim() }
+    }
+
+    foreach ($name in @("python.exe", "python3.exe")) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) { $candidates += $command.Source }
+    }
+
+    $programsDir = "$env:LOCALAPPDATA\Programs\Python"
+    if (Test-Path $programsDir) {
+        $candidates += (Get-ChildItem $programsDir -Filter "python.exe" -Recurse -ErrorAction SilentlyContinue |
+                        ForEach-Object { $_.FullName })
+    }
+
+    foreach ($candidate in $candidates) {
+        if (-not $candidate -or -not (Test-Path $candidate)) { continue }
+        # O stub em WindowsApps apenas abre a Microsoft Store, nao executa nada.
+        if ($candidate -like "*\WindowsApps\*") { continue }
+
+        $major = & $candidate -c "import sys; print(sys.version_info[0])" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $major -and $major.Trim() -eq "3") {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Install-Python {
+    <# Instala o Python pelo winget quando a maquina ainda nao tem. #>
+    if (-not (Get-Command "winget.exe" -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+
+    Write-Host "[RoboCopy Manager] Python nao encontrado. Instalando pelo winget (so na primeira vez)..." -ForegroundColor Yellow
+    & winget.exe install --id Python.Python.3.12 --exact --source winget `
+                 --accept-package-agreements --accept-source-agreements --silent | Out-Null
+
+    # O PATH da sessao atual nao e atualizado pelo instalador: recarrega do registro.
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machinePath;$userPath"
+
+    return (Find-Python)
+}
+
+function Ensure-PythonPackages([string]$python) {
+    <# Garante customtkinter e pillow, as unicas dependencias da interface. #>
+    & $python -c "import customtkinter, PIL" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return $true }
+
+    Write-Host "[RoboCopy Manager] Instalando as bibliotecas da interface (customtkinter)..." -ForegroundColor Yellow
+    & $python -m pip install --quiet --disable-pip-version-check customtkinter pillow 2>$null | Out-Null
+
+    & $python -c "import customtkinter, PIL" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        # Em Python instalado para todos os usuarios o pip pode exigir escopo de usuario.
+        & $python -m pip install --quiet --disable-pip-version-check --user customtkinter pillow 2>$null | Out-Null
+        & $python -c "import customtkinter, PIL" 2>$null | Out-Null
+    }
+
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Resolve-PythonRuntime {
+    <# Devolve o Python a ser usado, instalando-o se necessario. #>
+    $python = Find-Python
+    if (-not $python) { $python = Install-Python }
+
+    if (-not $python) {
+        Write-Host "`n[AVISO] Nao foi possivel localizar nem instalar o Python nesta maquina." -ForegroundColor Yellow
+        Write-Host "        Instale em https://www.python.org/downloads/ (marque 'Add python.exe to PATH')" -ForegroundColor Yellow
+        Write-Host "        ou execute:  winget install Python.Python.3.12`n" -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host "[RoboCopy Manager] Python encontrado: $python" -ForegroundColor Gray
+    return $python
+}
+
 function Launch-GUIApp {
     Write-Host "`n==========================================================================" -ForegroundColor Cyan
     Write-Host "   ROBOCOPY MANAGER - INICIALIZANDO APLICATIVO GRAFICO (GUI)              " -ForegroundColor White
     Write-Host "==========================================================================" -ForegroundColor Cyan
 
-    $exeName = "RoboCopyManager.exe"
-    $localCandidates = @()
-    if ($PSScriptRoot) {
-        $localCandidates += (Join-Path $PSScriptRoot $exeName)
-        $localCandidates += (Join-Path $PSScriptRoot "dist\$exeName")
-    }
-    $localCandidates += (Join-Path (Get-Location) $exeName)
-    $localCandidates += (Join-Path (Get-Location) "dist\$exeName")
+    $python = Resolve-PythonRuntime
+    if (-not $python) { return $false }
 
-    $foundExe = $null
-    foreach ($cand in $localCandidates) {
-        if ($cand -and (Test-Path $cand)) {
-            $foundExe = (Resolve-Path $cand).Path
-            break
-        }
+    $appDir = Get-AppSource
+    if (-not $appDir) { return $false }
+
+    if (-not (Ensure-PythonPackages $python)) {
+        Write-Host "[ERRO] Nao foi possivel instalar as bibliotecas da interface grafica." -ForegroundColor Red
+        Write-Host "[INFO] Alternando para o menu em modo terminal (TUI)...`n" -ForegroundColor Yellow
+        return $false
     }
 
-    $cacheDir = "$env:LOCALAPPDATA\RoboCopyManager"
-    $cacheExe = Join-Path $cacheDir $exeName
+    # pythonw.exe abre a janela sem deixar um console preto aberto atras dela.
+    $pythonw = Join-Path (Split-Path $python -Parent) "pythonw.exe"
+    if (-not (Test-Path $pythonw)) { $pythonw = $python }
 
-    if (-not $foundExe) {
-        if (-not (Test-Path $cacheDir)) {
-            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-        }
-
-        $needsDownload = $true
-        if ((Test-Path $cacheExe) -and (-not $Update)) {
-            $fileSize = (Get-Item $cacheExe).Length
-            if ($fileSize -ge 30000000) {
-                $foundExe = $cacheExe
-                $needsDownload = $false
-            }
-        }
-
-        if ($needsDownload) {
-            Write-Host "[RoboCopy Manager] Baixando a interface grafica oficial do GitHub..." -ForegroundColor Yellow
-            $downloadUrl = "https://raw.githubusercontent.com/pedropaivaf/RoboCopyManager/main/dist/RoboCopyManager.exe"
-            
-            try {
-                $wc = New-Object System.Net.WebClient
-                $wc.Headers.Add("User-Agent", "RoboCopyManager-Bootstrap")
-                $wc.DownloadFile($downloadUrl, $cacheExe)
-                $foundExe = $cacheExe
-                Write-Host "[RoboCopy Manager] Download concluido com sucesso!" -ForegroundColor Green
-            } catch {
-                Write-Host "[ERRO] Falha ao baixar executavel da nuvem: $($_.Exception.Message)" -ForegroundColor Red
-                Write-Host "[INFO] Alternando para o menu em modo terminal (TUI)...`n" -ForegroundColor Yellow
-                return $false
-            }
-        }
+    $entryPoint = Join-Path $appDir "robocopy_gui.py"
+    if (-not (Test-Path $entryPoint)) {
+        Write-Host "[ERRO] Arquivo principal da interface nao encontrado." -ForegroundColor Red
+        return $false
     }
 
-    if ($foundExe -and (Test-Path $foundExe)) {
-        Write-Host "[RoboCopy Manager] Executavel pronto: $foundExe" -ForegroundColor Gray
-        Write-Host "[RoboCopy Manager] Abrindo interface grafica..." -ForegroundColor Green
-        try {
-            if ($global:IsAdmin) {
-                Start-Process -FilePath $foundExe
-            } else {
-                Start-Process -FilePath $foundExe -Verb RunAs
-            }
-            Write-Host "[RoboCopy Manager] Aplicativo carregado com sucesso!`n" -ForegroundColor Cyan
-            return $true
-        } catch {
-            Write-Host "[AVISO] Solicitacao de Administrador cancelada. Tentando abrir em modo comum..." -ForegroundColor DarkYellow
-            try {
-                Start-Process -FilePath $foundExe
-                return $true
-            } catch {
-                Write-Host "[ERRO] Nao foi possivel iniciar a interface grafica: $($_.Exception.Message)`n" -ForegroundColor Red
-                return $false
-            }
-        }
+    Write-Host "[RoboCopy Manager] Abrindo interface grafica..." -ForegroundColor Green
+    try {
+        # A propria aplicacao tem o botao "Executar como Administrador" quando precisar,
+        # entao aqui ela abre sem forcar o UAC a cada inicializacao.
+        Start-Process -FilePath $pythonw -ArgumentList "`"$entryPoint`"" -WorkingDirectory $appDir
+        Write-Host "[RoboCopy Manager] Aplicativo carregado com sucesso!`n" -ForegroundColor Cyan
+        return $true
+    } catch {
+        Write-Host "[ERRO] Nao foi possivel iniciar a interface grafica: $($_.Exception.Message)`n" -ForegroundColor Red
+        return $false
     }
-    return $false
+}
+
+function Launch-PythonCLI {
+    <#
+        Abre o terminal interativo em Python (com analise de divergencias,
+        log colorido e flags livres). Retorna $false para cair na TUI do
+        proprio PowerShell quando o Python nao estiver disponivel.
+    #>
+    $python = Find-Python
+    if (-not $python) { return $false }
+
+    $appDir = Get-AppSource
+    if (-not $appDir) { return $false }
+
+    $entryPoint = Join-Path $appDir "robocopy_cli.py"
+    if (-not (Test-Path $entryPoint)) { return $false }
+
+    Push-Location $appDir
+    try {
+        & $python $entryPoint
+        return $true
+    } catch {
+        return $false
+    } finally {
+        Pop-Location
+    }
 }
 
 
@@ -462,8 +621,11 @@ if ($Source -and $Destination) {
     $exitCode = Execute-RobocopyTask $Source $Destination $argsList $DryRun $isTwoWay
     exit $exitCode
 } elseif ($CLI -or $Console) {
-    # Modo Interativo de Terminal Texto (TUI)
-    Start-InteractiveUI
+    # Modo Interativo de Terminal Texto: usa o terminal completo em Python quando
+    # disponivel e cai na TUI nativa do PowerShell caso contrario.
+    if (-not (Launch-PythonCLI)) {
+        Start-InteractiveUI
+    }
 } else {
     # Modo Padrão (Padrão Win11Debloat): Iniciar a Interface Gráfica Desktop (GUI)
     $launched = Launch-GUIApp
